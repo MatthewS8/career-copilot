@@ -138,7 +138,7 @@ test('extracts only supported profile fields through the configured provider', a
     return new Response(JSON.stringify({
       choices: [{
         message: {
-          content: `\`\`\`json\n${JSON.stringify({
+          content: `Here is the extracted profile:\n\`\`\`json\n${JSON.stringify({
             name: 'Alex Morgan',
             roles: 'Product Designer',
             location: 'Berlin',
@@ -147,7 +147,7 @@ test('extracts only supported profile fields through the configured provider', a
             priorities: '',
             experience: 'Five years designing digital products.',
             ignored: 'not returned',
-          })}\n\`\`\``,
+          })}\n\`\`\`\nI hope this helps.`,
         },
       }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });

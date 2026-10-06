@@ -81,6 +81,28 @@ function getProviderKey(provider, response) {
   return null;
 }
 
+function parseJsonObject(value) {
+  const candidates = [value.trim()];
+  for (const match of value.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    candidates.push(match[1].trim());
+  }
+  const firstBrace = value.indexOf('{');
+  const lastBrace = value.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(value.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error('Invalid profile data');
+}
+
 async function providerRequest(provider, key, prompt, instructions, options = {}) {
   let url;
   let headers = { 'Content-Type': 'application/json' };
@@ -230,11 +252,7 @@ async function handleProfileExtraction(request, response) {
       instructions,
       { temperature: 0, maxTokens: 2_000, maxCharacters: 20_000, json: true },
     );
-    const firstBrace = result.indexOf('{');
-    const lastBrace = result.lastIndexOf('}');
-    if (firstBrace === -1 || lastBrace <= firstBrace) throw new Error('Invalid profile data');
-    const extracted = JSON.parse(result.slice(firstBrace, lastBrace + 1));
-    if (!extracted || typeof extracted !== 'object' || Array.isArray(extracted)) throw new Error('Invalid profile data');
+    const extracted = parseJsonObject(result);
     const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));
     if (!Object.values(profile).some(Boolean)) throw new Error('No profile data found');
     sendJson(response, 200, { profile });

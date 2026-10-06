@@ -41,6 +41,10 @@ function linkFor(url) {
   }
 }
 
+function limitText(value, maxLength) {
+  return typeof value === 'string' ? value.slice(0, maxLength) : '';
+}
+
 function setView(viewName) {
   document.querySelectorAll('.view').forEach((view) => {
     view.hidden = view.id !== `view-${viewName}`;
@@ -231,6 +235,7 @@ async function autofillProfile(source, content, button) {
       const field = profileForm.elements.namedItem(name);
       if (!field || typeof value !== 'string' || !value.trim()) continue;
       if (field.tagName === 'SELECT') {
+        if (field.value) continue;
         const option = Array.from(field.options).find((item) => item.value.toLowerCase() === value.trim().toLowerCase());
         if (!option || field.value === option.value) continue;
         field.value = option.value;
@@ -309,14 +314,58 @@ document.querySelector('#generate-letter').addEventListener('click', async () =>
   button.disabled = true;
   document.querySelector('#letter-status').textContent = 'Writing a first draft…';
   try {
+    const profileForLetter = {
+      name: limitText(profile.name, 200),
+      roles: limitText(profile.roles, 500),
+      location: limitText(profile.location, 300),
+      workStyle: limitText(profile.workStyle, 100),
+      experience: limitText(profile.experience, 2_000),
+      skills: limitText(profile.skills, 1_000),
+      priorities: limitText(profile.priorities, 1_000),
+      resume: limitText(profile.resume, 20_000),
+      linkedin: limitText(profile.linkedin, 500),
+    };
+    const payload = {
+      provider: document.querySelector('#letter-provider').value,
+      profile: profileForLetter,
+      job: { title: job.title, company: job.company, description },
+    };
+    const encoder = new TextEncoder();
+    const fieldsToShorten = [
+      [payload.profile, 'resume'],
+      [payload.job, 'description'],
+      [payload.profile, 'experience'],
+      [payload.profile, 'priorities'],
+      [payload.profile, 'skills'],
+    ];
+    let body = JSON.stringify(payload);
+    for (const [object, field] of fieldsToShorten) {
+      if (encoder.encode(body).byteLength <= 45_000) break;
+      const original = object[field];
+      let lower = 0;
+      let upper = original.length;
+      let best = '';
+      while (lower <= upper) {
+        const middle = Math.floor((lower + upper) / 2);
+        object[field] = original.slice(0, middle);
+        const candidate = JSON.stringify(payload);
+        if (encoder.encode(candidate).byteLength <= 45_000) {
+          best = object[field];
+          lower = middle + 1;
+        } else {
+          upper = middle - 1;
+        }
+      }
+      object[field] = best;
+      body = JSON.stringify(payload);
+    }
+    if (encoder.encode(body).byteLength > 45_000) {
+      throw new Error('Shorten the profile or job description before drafting a letter.');
+    }
     const response = await fetch('/api/cover-letter', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: document.querySelector('#letter-provider').value,
-        profile,
-        job: { title: job.title, company: job.company, description },
-      }),
+      body,
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'The letter could not be generated.');
