@@ -138,6 +138,7 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
         { role: 'user', content: prompt },
       ],
       temperature: options.temperature ?? 0.6,
+      ...(options.maxTokens ? { max_completion_tokens: options.maxTokens } : {}),
       ...(options.json ? { response_format: { type: 'json_object' } } : {}),
     };
     extractText = (data) => data.choices?.[0]?.message?.content;
@@ -182,7 +183,7 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
   const data = await response.json();
   const result = extractText(data);
   if (typeof result !== 'string' || !result.trim()) throw new Error('AI provider returned no text');
-  return result.trim().slice(0, options.maxCharacters || 12_000);
+  return options.maxCharacters === null ? result.trim() : result.trim().slice(0, options.maxCharacters ?? 12_000);
 }
 
 async function handleCoverLetter(request, response) {
@@ -269,7 +270,7 @@ async function handleProfileExtraction(request, response) {
       key,
       `Source type: ${source}\n\nProfile text:\n${content}`,
       instructions,
-      { temperature: 0, maxTokens: 2_000, maxCharacters: 20_000, json: true },
+      { temperature: 0, maxTokens: 2_000, maxCharacters: null, json: true },
     );
     const extracted = parseJsonObject(result);
     const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));

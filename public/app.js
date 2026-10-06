@@ -286,7 +286,7 @@ async function autofillProfile(source, content, button) {
       if (field.tagName === 'SELECT') {
         if (field.value) continue;
         const option = Array.from(field.options).find((item) => item.value.toLowerCase() === value.trim().toLowerCase());
-        if (!option || field.value === option.value) continue;
+        if (!option) continue;
         field.value = option.value;
       } else {
         if (field.value.trim()) continue;

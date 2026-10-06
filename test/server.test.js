@@ -182,7 +182,30 @@ test('extracts only supported profile fields through the configured provider', a
     assert.match(outboundRequest.options.body, /untrusted data/);
     const providerBody = JSON.parse(outboundRequest.options.body);
     assert.equal(providerBody.temperature, 0);
+    assert.equal(providerBody.max_completion_tokens, 2_000);
     assert.deepEqual(providerBody.response_format, { type: 'json_object' });
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('parses a complete long provider response before limiting field values', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'test-key';
+  global.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify({ name: 'A'.repeat(12_100) }) } }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', source: 'resume', content: 'Resume text' }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).profile.name.length, 1_000);
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
