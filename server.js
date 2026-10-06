@@ -95,13 +95,14 @@ function createProviderKeyStore(dataDirectory) {
   const masterKeyPath = path.join(dataDirectory, 'key-encryption.key');
   const encryptedKeysPath = path.join(dataDirectory, 'provider-keys.enc');
   let writeQueue = Promise.resolve();
+  let masterKeyPromise;
 
   async function ensureDirectory() {
     await fsPromises.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
     await fsPromises.chmod(dataDirectory, 0o700);
   }
 
-  async function getMasterKey() {
+  async function initializeMasterKey() {
     await ensureDirectory();
     try {
       const key = await fsPromises.readFile(masterKeyPath);
@@ -129,6 +130,16 @@ function createProviderKeyStore(dataDirectory) {
     }
   }
 
+  function getMasterKey() {
+    if (!masterKeyPromise) {
+      masterKeyPromise = initializeMasterKey().catch((error) => {
+        masterKeyPromise = null;
+        throw error;
+      });
+    }
+    return masterKeyPromise;
+  }
+
   async function readStoredKeys() {
     const masterKey = await getMasterKey();
     let contents;
@@ -140,17 +151,23 @@ function createProviderKeyStore(dataDirectory) {
     }
     await fsPromises.chmod(encryptedKeysPath, 0o600);
 
-    const record = JSON.parse(contents);
-    if (record.version !== 1) throw new Error('Unsupported encrypted key data');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, Buffer.from(record.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(record.data, 'base64')),
-      decipher.final(),
-    ]).toString('utf8');
-    const keys = JSON.parse(plaintext);
-    if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new Error('Invalid encrypted key data');
-    return Object.fromEntries(Object.entries(keys).filter(([provider, key]) => providers.has(provider) && typeof key === 'string'));
+    try {
+      const record = JSON.parse(contents);
+      if (record.version !== 1) throw new Error('Unsupported encrypted key data');
+      const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, Buffer.from(record.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
+      const plaintext = Buffer.concat([
+        decipher.update(Buffer.from(record.data, 'base64')),
+        decipher.final(),
+      ]).toString('utf8');
+      const keys = JSON.parse(plaintext);
+      if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new Error('Invalid encrypted key data');
+      return Object.fromEntries(Object.entries(keys).filter(([provider, key]) => providers.has(provider) && typeof key === 'string'));
+    } catch {
+      const error = new Error('Encrypted API key data could not be decrypted');
+      error.code = 'KEY_STORE_CORRUPT';
+      throw error;
+    }
   }
 
   async function writeStoredKeys(keys) {
@@ -178,18 +195,33 @@ function createProviderKeyStore(dataDirectory) {
 
   return {
     async get(provider) {
-      const keys = await readStoredKeys();
-      return keys[provider] || process.env[keyNames[provider]] || null;
+      try {
+        const keys = await readStoredKeys();
+        return keys[provider] || process.env[keyNames[provider]] || null;
+      } catch (error) {
+        console.error(`Encrypted API key lookup failed (${error?.code || error?.name || 'Error'})`);
+        return process.env[keyNames[provider]] || null;
+      }
     },
     async status() {
-      const keys = await readStoredKeys();
-      return Object.fromEntries([...providers].map((provider) => [
-        provider,
-        {
-          configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
-          source: keys[provider] ? 'saved' : process.env[keyNames[provider]] ? 'environment' : 'none',
-        },
-      ]));
+      let keys = {};
+      let storageError = false;
+      try {
+        keys = await readStoredKeys();
+      } catch (error) {
+        storageError = true;
+        console.error(`Encrypted API key status failed (${error?.code || error?.name || 'Error'})`);
+      }
+      return {
+        storageError,
+        providers: Object.fromEntries([...providers].map((provider) => [
+          provider,
+          {
+            configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
+            source: keys[provider] ? 'saved' : process.env[keyNames[provider]] ? 'environment' : 'none',
+          },
+        ])),
+      };
     },
     async set(provider, key) {
       return serializeWrite(async () => {
@@ -225,7 +257,7 @@ function isSameOrigin(request) {
 async function handleSettings(request, response, url, keyStore) {
   if (request.method === 'GET') {
     try {
-      sendJson(response, 200, { providers: await keyStore.status() });
+      sendJson(response, 200, await keyStore.status());
     } catch (error) {
       console.error(`API key status failed (${error?.code || error?.name || 'Error'})`);
       sendJson(response, 500, { error: 'Could not read API key settings.' });
@@ -247,8 +279,12 @@ async function handleSettings(request, response, url, keyStore) {
     if (!data) return;
     const provider = text(data.provider, 20);
     if (!validateProvider(provider, response)) return;
-    const key = text(data.key, 1_000);
-    if (!key || typeof data.key !== 'string' || data.key.trim().length > 1_000) {
+    if (typeof data.key !== 'string') {
+      sendJson(response, 400, { error: 'Enter a valid API key up to 1,000 characters.' });
+      return;
+    }
+    const key = data.key.trim();
+    if (!key || key.length > 1_000) {
       sendJson(response, 400, { error: 'Enter a valid API key up to 1,000 characters.' });
       return;
     }
@@ -257,7 +293,11 @@ async function handleSettings(request, response, url, keyStore) {
       sendJson(response, 200, { saved: true, provider });
     } catch (error) {
       console.error(`API key save failed (${error?.code || error?.name || 'Error'})`);
-      sendJson(response, 500, { error: 'Could not save the encrypted API key.' });
+      sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
+        error: error?.code === 'KEY_STORE_CORRUPT'
+          ? 'Saved API keys could not be decrypted. Restore the matching encryption and key files from backup before changing saved keys.'
+          : 'Could not save the encrypted API key.',
+      });
     }
     return;
   }
@@ -273,7 +313,11 @@ async function handleSettings(request, response, url, keyStore) {
     });
   } catch (error) {
     console.error(`API key removal failed (${error?.code || error?.name || 'Error'})`);
-    sendJson(response, 500, { error: 'Could not remove the saved API key.' });
+    sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
+      error: error?.code === 'KEY_STORE_CORRUPT'
+        ? 'Saved API keys could not be decrypted. Restore the matching encryption and key files from backup before changing saved keys.'
+        : 'Could not remove the saved API key.',
+    });
   }
 }
 

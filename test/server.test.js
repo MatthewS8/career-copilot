@@ -154,6 +154,60 @@ test('rejects cross-origin API key changes', async () => {
   assert.equal(reboundHost.status, 403);
 });
 
+test('falls back to environment keys and reports recovery guidance when encrypted storage is damaged', async () => {
+  const damagedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-damaged-'));
+  const damagedServer = createServer({ dataDirectory: damagedDirectory });
+  await fs.writeFile(path.join(damagedDirectory, 'key-encryption.key'), Buffer.alloc(32, 1), { mode: 0o600 });
+  await fs.writeFile(path.join(damagedDirectory, 'provider-keys.enc'), 'not encrypted json', { mode: 0o600 });
+  await new Promise((resolve) => damagedServer.listen(0, '127.0.0.1', resolve));
+  const damagedUrl = `http://127.0.0.1:${damagedServer.address().port}`;
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  const originalConsoleError = console.error;
+  process.env.OPENAI_API_KEY = 'environment-fallback-key';
+  let providerAuthorization;
+  global.fetch = async (url, options) => {
+    providerAuthorization = options.headers.Authorization;
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Draft letter' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  console.error = () => {};
+  try {
+    const response = await originalFetch(`${damagedUrl}/api/cover-letter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(providerAuthorization, ['Bearer', 'environment-fallback-key'].join(' '));
+
+    const settingsResponse = await originalFetch(`${damagedUrl}/api/settings`);
+    const settings = await settingsResponse.json();
+    assert.equal(settings.storageError, true);
+    assert.deepEqual(settings.providers.openai, { configured: true, source: 'environment' });
+
+    const saveResponse = await originalFetch(`${damagedUrl}/api/settings/provider-key`, {
+      method: 'POST',
+      headers: { origin: damagedUrl, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', key: 'new-key' }),
+    });
+    assert.equal(saveResponse.status, 503);
+    assert.match((await saveResponse.json()).error, /Restore the matching encryption/);
+  } finally {
+    global.fetch = originalFetch;
+    console.error = originalConsoleError;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+    await new Promise((resolve) => damagedServer.close(resolve));
+    await fs.rm(damagedDirectory, { recursive: true, force: true });
+  }
+});
+
 test('rejects unsupported providers and missing job details', async () => {
   const invalidProvider = await fetch(`${baseUrl}/api/cover-letter`, {
     method: 'POST',

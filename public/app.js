@@ -119,6 +119,7 @@ async function refreshProviderSettings() {
     const response = await fetch('/api/settings');
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Could not load API key settings.');
+    document.querySelector('#settings-storage-warning').hidden = !data.storageError;
     for (const [provider, state] of Object.entries(data.providers || {})) {
       const label = document.querySelector(`#provider-state-${provider}`);
       const removeButton = document.querySelector(`[data-provider="${provider}"] .remove-provider-key`);
@@ -135,10 +136,19 @@ async function refreshProviderSettings() {
       }
     }
   } catch {
+    document.querySelector('#settings-storage-warning').hidden = false;
+    document.querySelector('#settings-storage-warning').textContent = 'Could not load API key settings. Check the server and private data files.';
     document.querySelectorAll('.provider-state').forEach((label) => {
       label.textContent = 'Could not load key status.';
     });
   }
+}
+
+function settingsResponseError(response, data) {
+  if (response.status === 403) {
+    return `For security, manage API keys from localhost. Open http://127.0.0.1:${location.port || '3000'} in this browser.`;
+  }
+  return data.error || 'Could not update this API key.';
 }
 
 document.querySelectorAll('.provider-key-form').forEach((form) => {
@@ -162,7 +172,7 @@ document.querySelectorAll('.provider-key-form').forEach((form) => {
         body: JSON.stringify({ provider, key: input.value }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not save this key.');
+      if (!response.ok) throw new Error(settingsResponseError(response, data));
       input.value = '';
       status.textContent = 'Saved securely. The key is not shown again.';
       await refreshProviderSettings();
@@ -186,7 +196,7 @@ document.querySelectorAll('.remove-provider-key').forEach((button) => {
         method: 'DELETE',
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not remove this key.');
+      if (!response.ok) throw new Error(settingsResponseError(response, data));
       status.textContent = data.environmentConfigured
         ? 'Saved key removed. The server environment key is still active.'
         : 'Saved key removed.';
