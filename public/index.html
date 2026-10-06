@@ -27,6 +27,9 @@
             <span class="nav-icon" aria-hidden="true">▤</span> Saved jobs
             <span class="nav-count" id="nav-job-count">0</span>
           </button>
+          <button class="nav-item" type="button" data-view="settings">
+            <span class="nav-icon" aria-hidden="true">⚙</span> API settings
+          </button>
         </nav>
         <div class="sidebar-bottom">
           <div class="privacy-card">
@@ -172,6 +175,39 @@
                 <div class="job-list" id="job-list"></div>
               </section>
             </div>
+          </section>
+
+          <section class="view" id="view-settings" hidden>
+            <div class="inner-heading">
+              <p class="eyebrow">PRIVATE PROVIDER SETUP</p>
+              <h1>Your keys, <em>your control.</em></h1>
+              <p class="heading-copy">Add an AI provider key here once. JobFinder keeps it on the server and encrypts it before saving.</p>
+            </div>
+            <div class="form-note settings-note"><span aria-hidden="true">✳</span><div><strong>Encrypted at rest, never sent back to this page.</strong> Keys are encrypted with AES-256-GCM and stored in a private local data folder. They are decrypted only by the server when an AI request needs them. Anyone with access to this server account can access its files and use the app.</div></div>
+            <div class="settings-provider-list">
+              <article class="panel provider-card" data-provider-card="openai">
+                <div class="provider-heading"><div class="provider-symbol">O</div><div><h2>OpenAI</h2><p class="provider-state" id="provider-state-openai">Checking key status…</p></div></div>
+                <form class="provider-key-form" data-provider="openai">
+                  <label class="field"><span>API key</span><input type="password" name="key" maxlength="1000" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Paste your OpenAI API key"></label>
+                  <div class="provider-actions"><span class="status-message" role="status"></span><button class="button button-dark" type="submit">Save key</button><button class="text-button remove-provider-key" type="button" hidden>Remove saved key</button></div>
+                </form>
+              </article>
+              <article class="panel provider-card" data-provider-card="gemini">
+                <div class="provider-heading"><div class="provider-symbol gemini-symbol">G</div><div><h2>Google Gemini</h2><p class="provider-state" id="provider-state-gemini">Checking key status…</p></div></div>
+                <form class="provider-key-form" data-provider="gemini">
+                  <label class="field"><span>API key</span><input type="password" name="key" maxlength="1000" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Paste your Gemini API key"></label>
+                  <div class="provider-actions"><span class="status-message" role="status"></span><button class="button button-dark" type="submit">Save key</button><button class="text-button remove-provider-key" type="button" hidden>Remove saved key</button></div>
+                </form>
+              </article>
+              <article class="panel provider-card" data-provider-card="anthropic">
+                <div class="provider-heading"><div class="provider-symbol anthropic-symbol">A</div><div><h2>Anthropic Claude</h2><p class="provider-state" id="provider-state-anthropic">Checking key status…</p></div></div>
+                <form class="provider-key-form" data-provider="anthropic">
+                  <label class="field"><span>API key</span><input type="password" name="key" maxlength="1000" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Paste your Anthropic API key"></label>
+                  <div class="provider-actions"><span class="status-message" role="status"></span><button class="button button-dark" type="submit">Save key</button><button class="text-button remove-provider-key" type="button" hidden>Remove saved key</button></div>
+                </form>
+              </article>
+            </div>
+            <p class="settings-warning">JobFinder has no sign-in or multi-user protection. Keep it on your own computer at <code>127.0.0.1</code>; don’t expose this page on a public network. Your keys are not stored in browser storage.</p>
           </section>
         </main>
         <footer class="app-footer"><span>JobFinder</span><span>Find a role that feels like your next chapter.</span></footer>

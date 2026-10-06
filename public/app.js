@@ -98,8 +98,9 @@ function setView(viewName) {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === viewName);
   });
-  const labels = { dashboard: 'Overview', profile: 'My profile', jobs: 'Saved jobs' };
+  const labels = { dashboard: 'Overview', profile: 'My profile', jobs: 'Saved jobs', settings: 'API settings' };
   document.querySelector('#page-crumb').textContent = labels[viewName] || labels.dashboard;
+  if (viewName === 'settings') refreshProviderSettings();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -110,6 +111,91 @@ document.querySelectorAll('[data-open-view]').forEach((button) => {
   button.addEventListener('click', (event) => {
     event.preventDefault();
     setView(button.dataset.openView);
+  });
+});
+
+async function refreshProviderSettings() {
+  try {
+    const response = await fetch('/api/settings');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not load API key settings.');
+    for (const [provider, state] of Object.entries(data.providers || {})) {
+      const label = document.querySelector(`#provider-state-${provider}`);
+      const removeButton = document.querySelector(`[data-provider="${provider}"] .remove-provider-key`);
+      if (!label || !removeButton) continue;
+      if (state.source === 'saved') {
+        label.textContent = 'A saved key is encrypted on this server.';
+        removeButton.hidden = false;
+      } else if (state.source === 'environment') {
+        label.textContent = 'Using a key from the server environment.';
+        removeButton.hidden = true;
+      } else {
+        label.textContent = 'No key configured.';
+        removeButton.hidden = true;
+      }
+    }
+  } catch {
+    document.querySelectorAll('.provider-state').forEach((label) => {
+      label.textContent = 'Could not load key status.';
+    });
+  }
+}
+
+document.querySelectorAll('.provider-key-form').forEach((form) => {
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const provider = form.dataset.provider;
+    const input = form.elements.namedItem('key');
+    const status = form.querySelector('[role="status"]');
+    const button = form.querySelector('button[type="submit"]');
+    if (!input.value.trim()) {
+      status.textContent = 'Enter an API key first.';
+      return;
+    }
+
+    button.disabled = true;
+    status.textContent = 'Encrypting and saving…';
+    try {
+      const response = await fetch('/api/settings/provider-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, key: input.value }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save this key.');
+      input.value = '';
+      status.textContent = 'Saved securely. The key is not shown again.';
+      await refreshProviderSettings();
+    } catch (error) {
+      status.textContent = error.message || 'Could not save this key.';
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+
+document.querySelectorAll('.remove-provider-key').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const provider = button.closest('[data-provider-card]').dataset.providerCard;
+    const form = button.closest('.provider-card').querySelector('.provider-key-form');
+    const status = form.querySelector('[role="status"]');
+    button.disabled = true;
+    status.textContent = 'Removing saved key…';
+    try {
+      const response = await fetch(`/api/settings/provider-key?provider=${encodeURIComponent(provider)}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not remove this key.');
+      status.textContent = data.environmentConfigured
+        ? 'Saved key removed. The server environment key is still active.'
+        : 'Saved key removed.';
+      await refreshProviderSettings();
+    } catch (error) {
+      status.textContent = error.message || 'Could not remove this key.';
+    } finally {
+      button.disabled = false;
+    }
   });
 });
 

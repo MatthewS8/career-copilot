@@ -1,6 +1,8 @@
 const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
 const http = require('node:http');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const publicDirectory = path.join(__dirname, 'public');
 const maxRequestBytes = 50_000;
@@ -16,6 +18,7 @@ const mimeTypes = {
 function send(response, status, contentType, body) {
   response.writeHead(status, {
     'Content-Type': contentType,
+    'Cache-Control': 'no-store',
     'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'X-Content-Type-Options': 'nosniff',
@@ -74,11 +77,204 @@ function validateProvider(provider, response) {
   return false;
 }
 
-function getProviderKey(provider, response) {
-  const key = process.env[keyNames[provider]];
+async function getProviderKey(provider, keyStore, response) {
+  let key;
+  try {
+    key = await keyStore.get(provider);
+  } catch (error) {
+    console.error(`API key lookup failed (${error?.code || error?.name || 'Error'})`);
+    sendJson(response, 500, { error: 'Could not read the configured API key.' });
+    return null;
+  }
   if (key) return key;
-  sendJson(response, 503, { error: `Set ${keyNames[provider]} on the server to enable this provider.` });
+  sendJson(response, 503, { error: `Add a key in API settings or configure ${keyNames[provider]} on the server.` });
   return null;
+}
+
+function createProviderKeyStore(dataDirectory) {
+  const masterKeyPath = path.join(dataDirectory, 'key-encryption.key');
+  const encryptedKeysPath = path.join(dataDirectory, 'provider-keys.enc');
+  let writeQueue = Promise.resolve();
+
+  async function ensureDirectory() {
+    await fsPromises.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+    await fsPromises.chmod(dataDirectory, 0o700);
+  }
+
+  async function getMasterKey() {
+    await ensureDirectory();
+    try {
+      const key = await fsPromises.readFile(masterKeyPath);
+      if (key.length !== 32) throw new Error('Invalid key encryption material');
+      await fsPromises.chmod(masterKeyPath, 0o600);
+      return key;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const key = crypto.randomBytes(32);
+      let handle;
+      try {
+        handle = await fsPromises.open(masterKeyPath, 'wx', 0o600);
+        await handle.writeFile(key);
+        await handle.sync();
+        return key;
+      } catch (createError) {
+        if (createError.code !== 'EEXIST') throw createError;
+        const existingKey = await fsPromises.readFile(masterKeyPath);
+        if (existingKey.length !== 32) throw new Error('Invalid key encryption material');
+        await fsPromises.chmod(masterKeyPath, 0o600);
+        return existingKey;
+      } finally {
+        await handle?.close();
+      }
+    }
+  }
+
+  async function readStoredKeys() {
+    const masterKey = await getMasterKey();
+    let contents;
+    try {
+      contents = await fsPromises.readFile(encryptedKeysPath, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return {};
+      throw error;
+    }
+    await fsPromises.chmod(encryptedKeysPath, 0o600);
+
+    const record = JSON.parse(contents);
+    if (record.version !== 1) throw new Error('Unsupported encrypted key data');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, Buffer.from(record.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(record.data, 'base64')),
+      decipher.final(),
+    ]).toString('utf8');
+    const keys = JSON.parse(plaintext);
+    if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new Error('Invalid encrypted key data');
+    return Object.fromEntries(Object.entries(keys).filter(([provider, key]) => providers.has(provider) && typeof key === 'string'));
+  }
+
+  async function writeStoredKeys(keys) {
+    const masterKey = await getMasterKey();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', masterKey, iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(keys), 'utf8'), cipher.final()]);
+    const record = JSON.stringify({
+      version: 1,
+      iv: iv.toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+      data: encrypted.toString('base64'),
+    });
+    const temporaryPath = path.join(dataDirectory, `.provider-keys-${crypto.randomBytes(8).toString('hex')}.tmp`);
+    await fsPromises.writeFile(temporaryPath, record, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await fsPromises.rename(temporaryPath, encryptedKeysPath);
+    await fsPromises.chmod(encryptedKeysPath, 0o600);
+  }
+
+  function serializeWrite(callback) {
+    const operation = writeQueue.then(callback);
+    writeQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  return {
+    async get(provider) {
+      const keys = await readStoredKeys();
+      return keys[provider] || process.env[keyNames[provider]] || null;
+    },
+    async status() {
+      const keys = await readStoredKeys();
+      return Object.fromEntries([...providers].map((provider) => [
+        provider,
+        {
+          configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
+          source: keys[provider] ? 'saved' : process.env[keyNames[provider]] ? 'environment' : 'none',
+        },
+      ]));
+    },
+    async set(provider, key) {
+      return serializeWrite(async () => {
+        const keys = await readStoredKeys();
+        keys[provider] = key;
+        await writeStoredKeys(keys);
+      });
+    },
+    async remove(provider) {
+      return serializeWrite(async () => {
+        const keys = await readStoredKeys();
+        delete keys[provider];
+        await writeStoredKeys(keys);
+      });
+    },
+  };
+}
+
+function isSameOrigin(request) {
+  const origin = request.headers.origin;
+  const host = request.headers.host;
+  if (!origin || !host) return false;
+  try {
+    const parsedOrigin = new URL(origin);
+    return ['http:', 'https:'].includes(parsedOrigin.protocol)
+      && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname)
+      && parsedOrigin.host === host;
+  } catch {
+    return false;
+  }
+}
+
+async function handleSettings(request, response, url, keyStore) {
+  if (request.method === 'GET') {
+    try {
+      sendJson(response, 200, { providers: await keyStore.status() });
+    } catch (error) {
+      console.error(`API key status failed (${error?.code || error?.name || 'Error'})`);
+      sendJson(response, 500, { error: 'Could not read API key settings.' });
+    }
+    return;
+  }
+
+  if (!['POST', 'DELETE'].includes(request.method)) {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return;
+  }
+  if (!isSameOrigin(request)) {
+    sendJson(response, 403, { error: 'Settings changes must come from this JobFinder page.' });
+    return;
+  }
+
+  if (request.method === 'POST') {
+    const data = await readRequestData(request, response);
+    if (!data) return;
+    const provider = text(data.provider, 20);
+    if (!validateProvider(provider, response)) return;
+    const key = text(data.key, 1_000);
+    if (!key || typeof data.key !== 'string' || data.key.trim().length > 1_000) {
+      sendJson(response, 400, { error: 'Enter a valid API key up to 1,000 characters.' });
+      return;
+    }
+    try {
+      await keyStore.set(provider, key);
+      sendJson(response, 200, { saved: true, provider });
+    } catch (error) {
+      console.error(`API key save failed (${error?.code || error?.name || 'Error'})`);
+      sendJson(response, 500, { error: 'Could not save the encrypted API key.' });
+    }
+    return;
+  }
+
+  const provider = text(url.searchParams.get('provider'), 20);
+  if (!validateProvider(provider, response)) return;
+  try {
+    await keyStore.remove(provider);
+    sendJson(response, 200, {
+      removed: true,
+      provider,
+      environmentConfigured: Boolean(process.env[keyNames[provider]]),
+    });
+  } catch (error) {
+    console.error(`API key removal failed (${error?.code || error?.name || 'Error'})`);
+    sendJson(response, 500, { error: 'Could not remove the saved API key.' });
+  }
 }
 
 function parseJsonObject(value) {
@@ -190,7 +386,7 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
   return result.trim().slice(0, options.maxCharacters ?? 12_000);
 }
 
-async function handleCoverLetter(request, response) {
+async function handleCoverLetter(request, response, keyStore) {
   const data = await readRequestData(request, response);
   if (!data) return;
 
@@ -207,7 +403,7 @@ async function handleCoverLetter(request, response) {
     return;
   }
 
-  const key = getProviderKey(provider, response);
+  const key = await getProviderKey(provider, keyStore, response);
   if (!key) return;
 
   const prompt = [
@@ -238,7 +434,7 @@ async function handleCoverLetter(request, response) {
   }
 }
 
-async function handleProfileExtraction(request, response) {
+async function handleProfileExtraction(request, response, keyStore) {
   const data = await readRequestData(request, response);
   if (!data) return;
 
@@ -255,7 +451,7 @@ async function handleProfileExtraction(request, response) {
     return;
   }
 
-  const key = getProviderKey(provider, response);
+  const key = await getProviderKey(provider, keyStore, response);
   if (!key) return;
 
   const fields = ['name', 'roles', 'location', 'workStyle', 'skills', 'priorities', 'experience'];
@@ -287,22 +483,27 @@ async function handleProfileExtraction(request, response) {
   }
 }
 
-function createServer() {
+function createServer(options = {}) {
+  const dataDirectory = options.dataDirectory
+    || process.env.JOBFINDER_DATA_DIR
+    || path.join(__dirname, '.data');
+  const keyStore = createProviderKeyStore(dataDirectory);
   return http.createServer(async (request, response) => {
-    let pathname;
+    let url;
     try {
-      pathname = new URL(request.url, 'http://localhost').pathname;
+      url = new URL(request.url, 'http://localhost');
     } catch {
       sendJson(response, 400, { error: 'Invalid request URL.' });
       return;
     }
+    const pathname = url.pathname;
 
     if (pathname === '/api/cover-letter') {
       if (request.method !== 'POST') {
         sendJson(response, 405, { error: 'Method not allowed.' });
         return;
       }
-      await handleCoverLetter(request, response);
+      await handleCoverLetter(request, response, keyStore);
       return;
     }
 
@@ -311,7 +512,12 @@ function createServer() {
         sendJson(response, 405, { error: 'Method not allowed.' });
         return;
       }
-      await handleProfileExtraction(request, response);
+      await handleProfileExtraction(request, response, keyStore);
+      return;
+    }
+
+    if (pathname === '/api/settings' || pathname === '/api/settings/provider-key') {
+      await handleSettings(request, response, url, keyStore);
       return;
     }
 

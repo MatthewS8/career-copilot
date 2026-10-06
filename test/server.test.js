@@ -1,18 +1,24 @@
 const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const { createServer } = require('../server');
 
 let server;
 let baseUrl;
+let dataDirectory;
 
 before(async () => {
-  server = createServer();
+  dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-test-'));
+  server = createServer({ dataDirectory });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
+  await fs.rm(dataDirectory, { recursive: true, force: true });
 });
 
 test('serves the app with security headers', async () => {
@@ -20,9 +26,132 @@ test('serves the app with security headers', async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /text\/html/);
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
   const html = await response.text();
   assert.match(html, /A clearer path to/);
   assert.match(html, /option value="Remote"/);
+  assert.match(html, /data-view="settings"/);
+  assert.match(html, /provider-key-form/);
+  assert.match(html, /accept="[^"]*\.tex/);
+});
+
+test('reports API key configuration status without returning any key', async () => {
+  const oldKey = process.env.GEMINI_API_KEY;
+  const oldOpenAiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  process.env.GEMINI_API_KEY = 'environment-key-secret';
+  try {
+    const response = await fetch(`${baseUrl}/api/settings`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.providers.gemini, { configured: true, source: 'environment' });
+    assert.deepEqual(body.providers.openai, { configured: false, source: 'none' });
+    assert.doesNotMatch(JSON.stringify(body), /environment-key-secret/);
+  } finally {
+    if (oldKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = oldKey;
+    if (oldOpenAiKey !== undefined) process.env.OPENAI_API_KEY = oldOpenAiKey;
+  }
+});
+
+test('saves provider keys encrypted and uses/removes saved keys server-side', async () => {
+  const secret = 'sk-test-private-provider-key';
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-fallback-key';
+  const origin = { origin: baseUrl };
+  let providerAuthorization;
+  global.fetch = async (url, options) => {
+    providerAuthorization = options.headers.Authorization;
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Draft letter' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const saveResponse = await originalFetch(`${baseUrl}/api/settings/provider-key`, {
+      method: 'POST',
+      headers: { ...origin, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', key: secret }),
+    });
+    assert.equal(saveResponse.status, 200);
+    assert.deepEqual(await saveResponse.json(), { saved: true, provider: 'openai' });
+
+    const encryptedPath = path.join(dataDirectory, 'provider-keys.enc');
+    const encryptedContent = await fs.readFile(encryptedPath, 'utf8');
+    assert.doesNotMatch(encryptedContent, new RegExp(secret));
+    const record = JSON.parse(encryptedContent);
+    assert.equal(record.version, 1);
+    const masterKeyPath = path.join(dataDirectory, 'key-encryption.key');
+    assert.equal((await fs.readFile(masterKeyPath)).length, 32);
+    assert.equal((await fs.stat(masterKeyPath)).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(encryptedPath)).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(dataDirectory)).mode & 0o777, 0o700);
+
+    const statusResponse = await originalFetch(`${baseUrl}/api/settings`);
+    const status = await statusResponse.json();
+    assert.deepEqual(status.providers.openai, { configured: true, source: 'saved' });
+    assert.doesNotMatch(JSON.stringify(status), new RegExp(secret));
+
+    const letterResponse = await originalFetch(`${baseUrl}/api/cover-letter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
+      }),
+    });
+    assert.equal(letterResponse.status, 200);
+    assert.equal(providerAuthorization, ['Bearer', secret].join(' '));
+
+    const removeResponse = await originalFetch(`${baseUrl}/api/settings/provider-key?provider=openai`, {
+      method: 'DELETE',
+      headers: origin,
+    });
+    assert.deepEqual(await removeResponse.json(), {
+      removed: true,
+      provider: 'openai',
+      environmentConfigured: true,
+    });
+    assert.deepEqual((await (await originalFetch(`${baseUrl}/api/settings`)).json()).providers.openai, {
+      configured: true,
+      source: 'environment',
+    });
+    const fallbackResponse = await originalFetch(`${baseUrl}/api/cover-letter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
+      }),
+    });
+    assert.equal(fallbackResponse.status, 200);
+    assert.equal(providerAuthorization, ['Bearer', 'environment-fallback-key'].join(' '));
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('rejects cross-origin API key changes', async () => {
+  const foreignOrigin = await fetch(`${baseUrl}/api/settings/provider-key`, {
+    method: 'POST',
+    headers: { origin: 'https://attacker.example', 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openai', key: 'sk-should-not-save' }),
+  });
+  assert.equal(foreignOrigin.status, 403);
+
+  const reboundHost = await fetch(`${baseUrl}/api/settings/provider-key`, {
+    method: 'POST',
+    headers: {
+      host: 'attacker.example',
+      origin: 'http://attacker.example',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ provider: 'openai', key: 'sk-should-not-save' }),
+  });
+  assert.equal(reboundHost.status, 403);
 });
 
 test('rejects unsupported providers and missing job details', async () => {
