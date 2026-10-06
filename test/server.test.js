@@ -292,6 +292,31 @@ test('rejects malformed profile extraction output', async () => {
   }
 });
 
+test('logs provider failure status without logging provider content', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  const originalConsoleError = console.error;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let loggedMessage = '';
+  global.fetch = async () => new Response('Sensitive provider response', { status: 429 });
+  console.error = (message) => { loggedMessage = message; };
+  try {
+    const response = await originalFetch(`${baseUrl}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', source: 'resume', content: 'Private resume text' }),
+    });
+    assert.equal(response.status, 502);
+    assert.match(loggedMessage, /openai, 429, Error/);
+    assert.doesNotMatch(loggedMessage, /Sensitive|Private|test-key/);
+  } finally {
+    global.fetch = originalFetch;
+    console.error = originalConsoleError;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
 test('rejects malformed JSON', async () => {
   const response = await fetch(`${baseUrl}/api/cover-letter`, {
     method: 'POST',

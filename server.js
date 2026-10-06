@@ -178,12 +178,16 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(45_000),
   });
-  if (!response.ok) throw new Error('AI provider request failed');
+  if (!response.ok) {
+    const error = new Error('AI provider request failed');
+    error.status = response.status;
+    throw error;
+  }
 
   const data = await response.json();
   const result = extractText(data);
   if (typeof result !== 'string' || !result.trim()) throw new Error('AI provider returned no text');
-  return options.maxCharacters === null ? result.trim() : result.trim().slice(0, options.maxCharacters ?? 12_000);
+  return result.trim().slice(0, options.maxCharacters ?? 12_000);
 }
 
 async function handleCoverLetter(request, response) {
@@ -270,7 +274,7 @@ async function handleProfileExtraction(request, response) {
       key,
       `Source type: ${source}\n\nProfile text:\n${content}`,
       instructions,
-      { temperature: 0, maxTokens: 2_000, maxCharacters: null, json: true },
+      { temperature: 0, maxTokens: 2_000, maxCharacters: 40_000, json: true },
     );
     const extracted = parseJsonObject(result);
     const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));
@@ -278,7 +282,7 @@ async function handleProfileExtraction(request, response) {
     if (!Object.values(profile).some(Boolean)) throw new Error('No profile data found');
     sendJson(response, 200, { profile });
   } catch (error) {
-    console.error(`Profile extraction failed (${provider}): ${error?.name || 'Error'}`);
+    console.error(`Profile extraction failed (${provider}, ${error?.status ?? 'unknown'}, ${error?.name || 'Error'})`);
     sendJson(response, 502, { error: 'Could not extract profile details. Check the provider configuration and try again.' });
   }
 }
