@@ -22,6 +22,12 @@ OPENAI_API_KEY=your-key npm start
 
 Supported environment variables are `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `ANTHROPIC_API_KEY`. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. Keys stay on the server and are never saved in the browser. The candidate profile and job description are sent to the selected provider only when you request a draft. Review generated text for accuracy before using it.
 
+## Autofill your profile
+
+Upload a `.txt` or `.md` resume (or paste its text), choose a configured AI provider, and select **Autofill from resume**. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill.
+
+A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to profile content. The URL is saved in your browser, but JobFinder does not fetch or scrape LinkedIn. Open your profile and paste the details you want to use.
+
 ## What it does
 
 - Saves your job-search preferences and resume text in the browser's local storage.

@@ -94,6 +94,119 @@ test('sends a cover-letter prompt to the selected provider', async () => {
   }
 });
 
+test('rejects unsupported profile extraction sources and empty text', async () => {
+  const invalidSource = await fetch(`${baseUrl}/api/extract-profile`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openai', source: 'url', content: 'https://linkedin.com/in/example' }),
+  });
+  assert.equal(invalidSource.status, 400);
+  assert.match((await invalidSource.json()).error, /resume or LinkedIn profile text/);
+
+  const emptyContent = await fetch(`${baseUrl}/api/extract-profile`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openai', source: 'resume', content: '  ' }),
+  });
+  assert.equal(emptyContent.status, 400);
+  assert.match((await emptyContent.json()).error, /text first/);
+});
+
+test('returns a clear error when the extraction provider key is not configured', async () => {
+  const oldKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  try {
+    const response = await fetch(`${baseUrl}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'gemini', source: 'resume', content: 'Resume text' }),
+    });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /GEMINI_API_KEY/);
+  } finally {
+    if (oldKey !== undefined) process.env.GEMINI_API_KEY = oldKey;
+  }
+});
+
+test('extracts only supported profile fields through the configured provider', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'test-key';
+  let outboundRequest;
+  global.fetch = async (url, options) => {
+    outboundRequest = { url, options };
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: `\`\`\`json\n${JSON.stringify({
+            name: 'Alex Morgan',
+            roles: 'Product Designer',
+            location: 'Berlin',
+            workStyle: '',
+            skills: 'Research, prototyping',
+            priorities: '',
+            experience: 'Five years designing digital products.',
+            ignored: 'not returned',
+          })}\n\`\`\``,
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const response = await originalFetch(`${baseUrl}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        source: 'linkedin',
+        content: 'Alex Morgan — Product Designer — Berlin',
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      profile: {
+        name: 'Alex Morgan',
+        roles: 'Product Designer',
+        location: 'Berlin',
+        workStyle: '',
+        skills: 'Research, prototyping',
+        priorities: '',
+        experience: 'Five years designing digital products.',
+      },
+    });
+    assert.equal(outboundRequest.url, 'https://api.openai.com/v1/chat/completions');
+    assert.equal(outboundRequest.options.headers.Authorization, ['Bearer', 'test-key'].join(' '));
+    assert.match(outboundRequest.options.body, /Alex Morgan — Product Designer/);
+    assert.match(outboundRequest.options.body, /untrusted data/);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('rejects malformed profile extraction output', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'test-key';
+  global.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: 'not JSON' } }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/extract-profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', source: 'resume', content: 'Resume text' }),
+    });
+    assert.equal(response.status, 502);
+    assert.match((await response.json()).error, /Could not extract/);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
 test('rejects malformed JSON', async () => {
   const response = await fetch(`${baseUrl}/api/cover-letter`, {
     method: 'POST',
