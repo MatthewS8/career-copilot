@@ -198,10 +198,58 @@ document.querySelector('#resume-file').addEventListener('change', async (event) 
   }
   try {
     profileForm.elements.namedItem('resume').value = await file.text();
-    document.querySelector('#profile-status').textContent = `${file.name} loaded. Save your profile to keep it.`;
+    document.querySelector('#profile-status').textContent = `${file.name} loaded. Choose “Autofill from resume” to extract profile details.`;
   } catch {
     document.querySelector('#profile-status').textContent = 'Could not read that file. Please paste your resume text instead.';
   }
+});
+
+async function autofillProfile(source, content, button) {
+  const status = document.querySelector('#profile-status');
+  if (!content.trim()) {
+    status.textContent = source === 'resume' ? 'Upload or paste your resume text first.' : 'Paste LinkedIn profile text first.';
+    return;
+  }
+
+  button.disabled = true;
+  status.textContent = 'Extracting profile details…';
+  try {
+    const response = await fetch('/api/extract-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: document.querySelector('#profile-ai-provider').value,
+        source,
+        content,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not extract profile details.');
+
+    let filled = 0;
+    for (const [name, value] of Object.entries(data.profile || {})) {
+      const field = profileForm.elements.namedItem(name);
+      if (field && typeof value === 'string' && value.trim() && !field.value.trim()) {
+        field.value = value;
+        filled += 1;
+      }
+    }
+    status.textContent = filled
+      ? `${filled} profile field${filled === 1 ? '' : 's'} filled. Review them, then save your profile. Existing entries were left unchanged.`
+      : 'No empty fields could be filled. Review the extracted details or clear fields you want to replace.';
+  } catch (error) {
+    status.textContent = error.message || 'Could not connect to the AI service.';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.querySelector('#autofill-resume').addEventListener('click', (event) => {
+  autofillProfile('resume', profileForm.elements.namedItem('resume').value, event.currentTarget);
+});
+
+document.querySelector('#autofill-linkedin').addEventListener('click', (event) => {
+  autofillProfile('linkedin', document.querySelector('#linkedin-profile-text').value, event.currentTarget);
 });
 
 jobForm.addEventListener('submit', (event) => {

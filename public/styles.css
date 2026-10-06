@@ -123,8 +123,14 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .field textarea { min-height: 72px; resize: vertical; line-height: 1.6; }
 .field input:focus, .field textarea:focus, .field select:focus, .list-toolbar select:focus { border-color: #8ea18d; box-shadow: 0 0 0 3px #eaf0e8; }
 .field input::placeholder, .field textarea::placeholder { color: #b0b4ad; }
+.field-hint { color: #858b82; font-size: 9px; font-weight: 400; line-height: 1.5; }
 .resume-section .form-section-heading { margin-bottom: 16px; }
 .resume-section > .field { margin: 16px 0 0 44px; }
+.autofill-controls { display: flex; align-items: end; justify-content: space-between; gap: 15px; margin: 14px 0 0 44px; }
+.autofill-controls > .field { width: min(220px, 50%); }
+.autofill-controls .button { white-space: nowrap; }
+.linkedin-import-section > .field { margin-left: 44px; }
+.linkedin-import-section .autofill-controls { align-items: center; }
 .upload-control { display: flex; align-items: center; gap: 11px; margin-left: 44px; padding: 12px; border: 1px dashed #d9ddd5; border-radius: 7px; cursor: pointer; }
 .upload-control:hover { background: #fafbf8; }
 .upload-symbol { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--mint); color: var(--green); font-size: 17px; }
@@ -235,7 +241,11 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .panel-icon { width: 33px; height: 33px; }
   .form-grid { grid-template-columns: 1fr; padding-left: 0; }
   .field-wide { grid-column: auto; }
-  .resume-section > .field, .upload-control { margin-left: 0; }
+  .resume-section > .field, .upload-control, .autofill-controls, .linkedin-import-section > .field { margin-left: 0; }
+  .autofill-controls { align-items: stretch; flex-direction: column; }
+  .autofill-controls > .field { width: 100%; }
+  .autofill-controls .button { align-self: flex-start; }
+  .linkedin-import-section .autofill-controls { align-items: flex-start; }
   .form-actions { padding-left: 0; }
   .jobs-heading { align-items: flex-start; gap: 8px; }
   .jobs-heading h1 { font-size: 32px; }
