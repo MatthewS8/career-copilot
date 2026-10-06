@@ -103,6 +103,25 @@ function parseJsonObject(value) {
   throw new Error('Invalid profile data');
 }
 
+function normalizeWorkStyle(value) {
+  const aliases = {
+    remote: 'Remote',
+    'remote first': 'Remote',
+    'remote-first': 'Remote',
+    'fully remote': 'Remote',
+    'work from home': 'Remote',
+    distributed: 'Remote',
+    hybrid: 'Hybrid',
+    'on-site': 'On-site',
+    onsite: 'On-site',
+    'on site': 'On-site',
+    'office based': 'On-site',
+    flexible: 'Flexible',
+  };
+  const normalized = text(value, 100).toLowerCase().replace(/\s+/g, ' ');
+  return aliases[normalized] || '';
+}
+
 async function providerRequest(provider, key, prompt, instructions, options = {}) {
   let url;
   let headers = { 'Content-Type': 'application/json' };
@@ -254,9 +273,11 @@ async function handleProfileExtraction(request, response) {
     );
     const extracted = parseJsonObject(result);
     const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));
+    profile.workStyle = normalizeWorkStyle(extracted.workStyle);
     if (!Object.values(profile).some(Boolean)) throw new Error('No profile data found');
     sendJson(response, 200, { profile });
-  } catch {
+  } catch (error) {
+    console.error(`Profile extraction failed (${provider}): ${error?.name || 'Error'}`);
     sendJson(response, 502, { error: 'Could not extract profile details. Check the provider configuration and try again.' });
   }
 }

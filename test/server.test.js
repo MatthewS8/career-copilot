@@ -20,7 +20,9 @@ test('serves the app with security headers', async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /text\/html/);
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
-  assert.match(await response.text(), /A clearer path to/);
+  const html = await response.text();
+  assert.match(html, /A clearer path to/);
+  assert.match(html, /option value="Remote"/);
 });
 
 test('rejects unsupported providers and missing job details', async () => {
@@ -142,7 +144,7 @@ test('extracts only supported profile fields through the configured provider', a
             name: 'Alex Morgan',
             roles: 'Product Designer',
             location: 'Berlin',
-            workStyle: '',
+            workStyle: 'Remote-first',
             skills: 'Research, prototyping',
             priorities: '',
             experience: 'Five years designing digital products.',
@@ -168,7 +170,7 @@ test('extracts only supported profile fields through the configured provider', a
         name: 'Alex Morgan',
         roles: 'Product Designer',
         location: 'Berlin',
-        workStyle: '',
+        workStyle: 'Remote',
         skills: 'Research, prototyping',
         priorities: '',
         experience: 'Five years designing digital products.',

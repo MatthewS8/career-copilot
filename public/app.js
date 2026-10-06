@@ -45,6 +45,52 @@ function limitText(value, maxLength) {
   return typeof value === 'string' ? value.slice(0, maxLength) : '';
 }
 
+function limitProfileSource(value) {
+  const encoder = new TextEncoder();
+  const characters = Array.from(value.trim());
+  let content = '';
+  let byteLength = 0;
+  for (const character of characters) {
+    if (content.length >= 20_000) break;
+    const characterBytes = encoder.encode(character).byteLength;
+    if (byteLength + characterBytes > 40_000) break;
+    content += character;
+    byteLength += characterBytes;
+  }
+  return content;
+}
+
+function makeAutofillRequest(provider, source, value) {
+  const original = value.trim();
+  const payload = { provider, source, content: limitProfileSource(original) };
+  const encoder = new TextEncoder();
+  let body = JSON.stringify(payload);
+  let shortened = payload.content.length < original.length;
+
+  if (encoder.encode(body).byteLength > 45_000) {
+    const characters = Array.from(payload.content);
+    let lower = 0;
+    let upper = characters.length;
+    let best = '';
+    while (lower <= upper) {
+      const middle = Math.floor((lower + upper) / 2);
+      payload.content = characters.slice(0, middle).join('');
+      const candidate = JSON.stringify(payload);
+      if (encoder.encode(candidate).byteLength <= 45_000) {
+        best = payload.content;
+        lower = middle + 1;
+      } else {
+        upper = middle - 1;
+      }
+    }
+    payload.content = best;
+    body = JSON.stringify(payload);
+    shortened = true;
+  }
+
+  return { body, shortened };
+}
+
 function setView(viewName) {
   document.querySelectorAll('.view').forEach((view) => {
     view.hidden = view.id !== `view-${viewName}`;
@@ -215,17 +261,20 @@ async function autofillProfile(source, content, button) {
     return;
   }
 
+  const { body, shortened } = makeAutofillRequest(
+    document.querySelector('#profile-ai-provider').value,
+    source,
+    content,
+  );
   button.disabled = true;
-  status.textContent = 'Extracting profile details…';
+  status.textContent = shortened
+    ? 'Extracting details from the first part of your text…'
+    : 'Extracting profile details…';
   try {
     const response = await fetch('/api/extract-profile', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: document.querySelector('#profile-ai-provider').value,
-        source,
-        content,
-      }),
+      body,
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Could not extract profile details.');
@@ -246,8 +295,8 @@ async function autofillProfile(source, content, button) {
       filled += 1;
     }
     status.textContent = filled
-      ? `${filled} profile field${filled === 1 ? '' : 's'} filled. Review them, then save your profile. Existing entries were left unchanged.`
-      : 'No new fields were added. Existing entries were left unchanged, and unsupported values may need manual entry.';
+      ? `${filled} profile field${filled === 1 ? '' : 's'} filled. Review them, then save your profile. Existing entries were left unchanged.${shortened ? ' Only part of the source text was used.' : ''}`
+      : `No new fields were added. Existing entries were left unchanged, and unsupported values may need manual entry.${shortened ? ' Only part of the source text was used.' : ''}`;
   } catch (error) {
     status.textContent = error.message || 'Could not connect to the AI service.';
   } finally {
