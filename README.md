@@ -4,13 +4,17 @@ JobFinder is a small, browser-based workspace for shaping your job search, savin
 
 ## Run it
 
-Requires Node.js 18 or newer. No third-party packages are needed.
+Requires Node.js 18.18 or newer. Install the frontend build dependencies with `npm install`.
 
 ```sh
 npm start
 ```
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The server binds to localhost by default. Set `PORT` to change the port, or set `HOST` to bind another interface. The app has no authentication, so only expose it on a trusted private network.
+
+`npm start` type-checks and builds the TypeScript/Svelte frontend and Node.js API server before starting the app. For frontend development, run `npm start` in one terminal and `npm run dev` in another, then open [http://127.0.0.1:5173](http://127.0.0.1:5173). The Vite development server proxies API requests to the server on port 3000.
+
+Run `npm run lint` to apply the strict ESLint rules, `npm run check` to type-check the frontend and server, and `npm run format:check` to verify Prettier formatting. Run `npm run format` to format the project source.
 
 ## Set up AI letter drafting
 

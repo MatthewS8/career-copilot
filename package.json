@@ -2,10 +2,19 @@
   "name": "jobfinder",
   "version": "1.0.0",
   "description": "A personal job-search assistant for organizing leads and drafting applications.",
-  "main": "server.js",
+  "main": "build/server.js",
+  "engines": {
+    "node": ">=18.18.0"
+  },
   "scripts": {
-    "start": "node server.js",
-    "test": "node --test"
+    "dev": "vite --host 127.0.0.1",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --project tsconfig.server.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
+    "format:check": "prettier --check \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
+    "build": "npm run check && vite build && tsc --project tsconfig.server.json",
+    "start": "npm run build && node build/server.js",
+    "test": "npm run build && node --test build/test/server.test.js"
   },
   "keywords": [
     "jobs",
@@ -13,5 +22,21 @@
     "assistant"
   ],
   "license": "MIT",
-  "type": "commonjs"
+  "type": "commonjs",
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@types/node": "^22.19.11",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.23.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^3.4.0",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^6.4.4"
+  }
 }
