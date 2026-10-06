@@ -24,13 +24,13 @@ Supported environment variables are `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `ANT
 
 ## Autofill your profile
 
-Upload a `.txt` or `.md` resume (or paste its text), choose a configured AI provider, and select **Autofill from resume**. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill. Resume text is saved with your profile in browser storage when you save; copied LinkedIn text is only used for the extraction request and is not saved.
+Upload a `.txt`, `.md`, or LaTeX `.tex` resume (or paste its text/source), choose a configured AI provider, and select **Autofill from resume**. LaTeX source is read as text; it is not compiled or rendered. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill. Resume text is saved with your profile in browser storage when you save; copied LinkedIn text is only used for the extraction request and is not saved.
 
 A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to profile content. The URL is saved in your browser, but JobFinder does not fetch or scrape LinkedIn. Open your profile and paste the details you want to use.
 
 ## What it does
 
-- Saves your job-search preferences and resume text in the browser's local storage.
+- Saves your job-search preferences and resume text (including LaTeX source) in the browser's local storage.
 - Lets you open LinkedIn, Indeed, and Google Jobs searches based on your preferred role and location.
 - Saves job links, descriptions, and notes locally, with application status tracking.
 - Drafts, copies, or downloads a cover letter using OpenAI, Gemini, or Anthropic.

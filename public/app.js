@@ -241,8 +241,8 @@ profileForm.addEventListener('submit', (event) => {
 document.querySelector('#resume-file').addEventListener('change', async (event) => {
   const [file] = event.target.files;
   if (!file) return;
-  if (file.size > 1_000_000) {
-    document.querySelector('#profile-status').textContent = 'That file is over 1 MB. Please paste a shorter resume instead.';
+  if (file.size > 2_000_000) {
+    document.querySelector('#profile-status').textContent = 'That file is over 2 MB. Please paste a shorter resume instead.';
     event.target.value = '';
     return;
   }

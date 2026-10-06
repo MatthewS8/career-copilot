@@ -134,9 +134,9 @@
                 </div>
               </div>
               <div class="form-section resume-section">
-                <div class="form-section-heading"><span class="step-number">02</span><div><h2>Bring your experience along</h2><p>Upload a .txt or .md resume, or paste its text. Choose an AI provider to suggest profile details.</p></div></div>
-                <label class="upload-control" for="resume-file"><span class="upload-symbol" aria-hidden="true">↑</span><span><strong>Choose a resume text file</strong><small>.txt or .md files are read locally in your browser</small></span><input id="resume-file" type="file" accept=".txt,.md,text/plain,text/markdown"></label>
-                <label class="field"><span>Resume text</span><textarea name="resume" rows="9" placeholder="Paste the relevant parts of your CV here. Keep it up to date before asking for a cover letter."></textarea></label>
+                <div class="form-section-heading"><span class="step-number">02</span><div><h2>Bring your experience along</h2><p>Upload a .txt, .md, or LaTeX .tex resume, or paste its text. Choose an AI provider to suggest profile details.</p></div></div>
+                <label class="upload-control" for="resume-file"><span class="upload-symbol" aria-hidden="true">↑</span><span><strong>Choose a resume file</strong><small>.txt, .md, and .tex files are read locally in your browser</small></span><input id="resume-file" type="file" accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"></label>
+                <label class="field"><span>Resume text or LaTeX source</span><textarea name="resume" rows="9" placeholder="Paste the relevant parts of your CV or its LaTeX source here."></textarea></label>
                 <div class="autofill-controls"><label class="field"><span>AI provider</span><select id="profile-ai-provider"><option value="openai">OpenAI</option><option value="gemini">Google Gemini</option><option value="anthropic">Anthropic Claude</option></select></label><button class="button button-dark" id="autofill-resume" type="button">Autofill from resume <span aria-hidden="true">✳</span></button></div>
               </div>
               <div class="form-section linkedin-import-section">
