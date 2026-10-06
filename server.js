@@ -5,6 +5,7 @@ const path = require('node:path');
 const publicDirectory = path.join(__dirname, 'public');
 const maxRequestBytes = 50_000;
 const providers = new Set(['openai', 'gemini', 'anthropic']);
+const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -57,7 +58,30 @@ function text(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
-async function providerRequest(provider, key, prompt, instructions) {
+async function readRequestData(request, response) {
+  try {
+    const data = await readJson(request);
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  } catch (error) {
+    sendJson(response, error.status || 400, { error: error.status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
+    return null;
+  }
+}
+
+function validateProvider(provider, response) {
+  if (providers.has(provider)) return true;
+  sendJson(response, 400, { error: 'Choose OpenAI, Gemini, or Anthropic.' });
+  return false;
+}
+
+function getProviderKey(provider, response) {
+  const key = process.env[keyNames[provider]];
+  if (key) return key;
+  sendJson(response, 503, { error: `Set ${keyNames[provider]} on the server to enable this provider.` });
+  return null;
+}
+
+async function providerRequest(provider, key, prompt, instructions, options = {}) {
   let url;
   let headers = { 'Content-Type': 'application/json' };
   let body;
@@ -72,7 +96,8 @@ async function providerRequest(provider, key, prompt, instructions) {
         { role: 'system', content: instructions },
         { role: 'user', content: prompt },
       ],
-      temperature: 0.6,
+      temperature: options.temperature ?? 0.6,
+      ...(options.json ? { response_format: { type: 'json_object' } } : {}),
     };
     extractText = (data) => data.choices?.[0]?.message?.content;
   } else if (provider === 'gemini') {
@@ -84,7 +109,11 @@ async function providerRequest(provider, key, prompt, instructions) {
         parts: [{ text: instructions }],
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.6 },
+      generationConfig: {
+        temperature: options.temperature ?? 0.6,
+        ...(options.maxTokens ? { maxOutputTokens: options.maxTokens } : {}),
+        ...(options.json ? { responseMimeType: 'application/json' } : {}),
+      },
     };
     extractText = (data) => data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('');
   } else {
@@ -93,9 +122,10 @@ async function providerRequest(provider, key, prompt, instructions) {
     headers['anthropic-version'] = '2023-06-01';
     body = {
       model: process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest',
-      max_tokens: 1200,
+      max_tokens: options.maxTokens || 1200,
       system: instructions,
       messages: [{ role: 'user', content: prompt }],
+      ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
     };
     extractText = (data) => data.content?.filter((block) => block.type === 'text').map((block) => block.text).join('');
   }
@@ -111,23 +141,15 @@ async function providerRequest(provider, key, prompt, instructions) {
   const data = await response.json();
   const result = extractText(data);
   if (typeof result !== 'string' || !result.trim()) throw new Error('AI provider returned no text');
-  return result.trim().slice(0, 12_000);
+  return result.trim().slice(0, options.maxCharacters || 12_000);
 }
 
 async function handleCoverLetter(request, response) {
-  let data;
-  try {
-    data = await readJson(request);
-  } catch (error) {
-    sendJson(response, error.status || 400, { error: error.status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
-    return;
-  }
+  const data = await readRequestData(request, response);
+  if (!data) return;
 
   const provider = text(data?.provider, 20);
-  if (!providers.has(provider)) {
-    sendJson(response, 400, { error: 'Choose OpenAI, Gemini, or Anthropic.' });
-    return;
-  }
+  if (!validateProvider(provider, response)) return;
 
   const profile = data.profile && typeof data.profile === 'object' ? data.profile : {};
   const job = data.job && typeof data.job === 'object' ? data.job : {};
@@ -139,12 +161,8 @@ async function handleCoverLetter(request, response) {
     return;
   }
 
-  const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
-  const key = process.env[keyNames[provider]];
-  if (!key) {
-    sendJson(response, 503, { error: `Set ${keyNames[provider]} on the server to enable this provider.` });
-    return;
-  }
+  const key = getProviderKey(provider, response);
+  if (!key) return;
 
   const prompt = [
     `Candidate name: ${text(profile.name, 200) || 'Not provided'}`,
@@ -175,19 +193,11 @@ async function handleCoverLetter(request, response) {
 }
 
 async function handleProfileExtraction(request, response) {
-  let data;
-  try {
-    data = await readJson(request);
-  } catch (error) {
-    sendJson(response, error.status || 400, { error: error.status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
-    return;
-  }
+  const data = await readRequestData(request, response);
+  if (!data) return;
 
   const provider = text(data?.provider, 20);
-  if (!providers.has(provider)) {
-    sendJson(response, 400, { error: 'Choose OpenAI, Gemini, or Anthropic.' });
-    return;
-  }
+  if (!validateProvider(provider, response)) return;
   const source = text(data?.source, 20);
   if (!['resume', 'linkedin'].includes(source)) {
     sendJson(response, 400, { error: 'Choose resume or LinkedIn profile text.' });
@@ -199,12 +209,8 @@ async function handleProfileExtraction(request, response) {
     return;
   }
 
-  const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
-  const key = process.env[keyNames[provider]];
-  if (!key) {
-    sendJson(response, 503, { error: `Set ${keyNames[provider]} on the server to enable this provider.` });
-    return;
-  }
+  const key = getProviderKey(provider, response);
+  if (!key) return;
 
   const fields = ['name', 'roles', 'location', 'workStyle', 'skills', 'priorities', 'experience'];
   const instructions = [
@@ -217,8 +223,17 @@ async function handleProfileExtraction(request, response) {
   ].join(' ');
 
   try {
-    const result = await providerRequest(provider, key, `Source type: ${source}\n\nProfile text:\n${content}`, instructions);
-    const extracted = JSON.parse(result.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+    const result = await providerRequest(
+      provider,
+      key,
+      `Source type: ${source}\n\nProfile text:\n${content}`,
+      instructions,
+      { temperature: 0, maxTokens: 2_000, maxCharacters: 20_000, json: true },
+    );
+    const firstBrace = result.indexOf('{');
+    const lastBrace = result.lastIndexOf('}');
+    if (firstBrace === -1 || lastBrace <= firstBrace) throw new Error('Invalid profile data');
+    const extracted = JSON.parse(result.slice(firstBrace, lastBrace + 1));
     if (!extracted || typeof extracted !== 'object' || Array.isArray(extracted)) throw new Error('Invalid profile data');
     const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));
     if (!Object.values(profile).some(Boolean)) throw new Error('No profile data found');

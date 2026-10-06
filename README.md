@@ -24,7 +24,7 @@ Supported environment variables are `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `ANT
 
 ## Autofill your profile
 
-Upload a `.txt` or `.md` resume (or paste its text), choose a configured AI provider, and select **Autofill from resume**. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill.
+Upload a `.txt` or `.md` resume (or paste its text), choose a configured AI provider, and select **Autofill from resume**. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill. Resume text is saved with your profile in browser storage when you save; copied LinkedIn text is only used for the extraction request and is not saved.
 
 A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to profile content. The URL is saved in your browser, but JobFinder does not fetch or scrape LinkedIn. Open your profile and paste the details you want to use.
 

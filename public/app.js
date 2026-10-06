@@ -229,14 +229,20 @@ async function autofillProfile(source, content, button) {
     let filled = 0;
     for (const [name, value] of Object.entries(data.profile || {})) {
       const field = profileForm.elements.namedItem(name);
-      if (field && typeof value === 'string' && value.trim() && !field.value.trim()) {
+      if (!field || typeof value !== 'string' || !value.trim()) continue;
+      if (field.tagName === 'SELECT') {
+        const option = Array.from(field.options).find((item) => item.value.toLowerCase() === value.trim().toLowerCase());
+        if (!option || field.value === option.value) continue;
+        field.value = option.value;
+      } else {
+        if (field.value.trim()) continue;
         field.value = value;
-        filled += 1;
       }
+      filled += 1;
     }
     status.textContent = filled
       ? `${filled} profile field${filled === 1 ? '' : 's'} filled. Review them, then save your profile. Existing entries were left unchanged.`
-      : 'No empty fields could be filled. Review the extracted details or clear fields you want to replace.';
+      : 'No new fields were added. Existing entries were left unchanged, and unsupported values may need manual entry.';
   } catch (error) {
     status.textContent = error.message || 'Could not connect to the AI service.';
   } finally {

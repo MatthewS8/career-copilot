@@ -178,12 +178,72 @@ test('extracts only supported profile fields through the configured provider', a
     assert.equal(outboundRequest.options.headers.Authorization, ['Bearer', 'test-key'].join(' '));
     assert.match(outboundRequest.options.body, /Alex Morgan — Product Designer/);
     assert.match(outboundRequest.options.body, /untrusted data/);
+    const providerBody = JSON.parse(outboundRequest.options.body);
+    assert.equal(providerBody.temperature, 0);
+    assert.deepEqual(providerBody.response_format, { type: 'json_object' });
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = oldKey;
   }
 });
+
+for (const configuration of [
+  {
+    provider: 'gemini',
+    keyName: 'GEMINI_API_KEY',
+    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
+    response: (profileText) => ({ candidates: [{ content: { parts: [{ text: profileText }] } }] }),
+    checkRequest: (request) => {
+      assert.equal(request.options.headers['x-goog-api-key'], 'test-key');
+      const body = JSON.parse(request.options.body);
+      assert.equal(body.generationConfig.temperature, 0);
+      assert.equal(body.generationConfig.responseMimeType, 'application/json');
+    },
+  },
+  {
+    provider: 'anthropic',
+    keyName: 'ANTHROPIC_API_KEY',
+    url: 'https://api.anthropic.com/v1/messages',
+    response: (profileText) => ({ content: [{ type: 'text', text: profileText }] }),
+    checkRequest: (request) => {
+      assert.equal(request.options.headers['x-api-key'], 'test-key');
+      assert.equal(request.options.headers['anthropic-version'], '2023-06-01');
+      const body = JSON.parse(request.options.body);
+      assert.equal(body.temperature, 0);
+      assert.equal(body.max_tokens, 2_000);
+    },
+  },
+]) {
+  test(`extracts profile fields through ${configuration.provider}`, async () => {
+    const oldKey = process.env[configuration.keyName];
+    const originalFetch = global.fetch;
+    process.env[configuration.keyName] = 'test-key';
+    let outboundRequest;
+    global.fetch = async (url, options) => {
+      outboundRequest = { url, options };
+      return new Response(JSON.stringify(configuration.response('{"name":"Jamie Lee"}')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    try {
+      const response = await originalFetch(`${baseUrl}/api/extract-profile`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: configuration.provider, source: 'resume', content: 'Jamie Lee' }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).profile.name, 'Jamie Lee');
+      assert.equal(outboundRequest.url, configuration.url);
+      configuration.checkRequest(outboundRequest);
+    } finally {
+      global.fetch = originalFetch;
+      if (oldKey === undefined) delete process.env[configuration.keyName];
+      else process.env[configuration.keyName] = oldKey;
+    }
+  });
+}
 
 test('rejects malformed profile extraction output', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
