@@ -1,0 +1,17 @@
+{
+  "name": "jobfinder",
+  "version": "1.0.0",
+  "description": "This is a project that helps in the job search. It uses the API of your favourite AI and searches job posts that fits your parameters, then helps you write a good cover letter for your application.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://localhost:26831/MatthewS8/JobFinder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
