@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
 const fs = require('node:fs/promises');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { createServer } = require('../server');
@@ -154,6 +155,34 @@ test('rejects cross-origin API key changes', async () => {
     body: JSON.stringify({ provider: 'openai', key: 'sk-should-not-save' }),
   });
   assert.equal(reboundHost.status, 403);
+
+  const reboundApiStatus = await new Promise((resolve, reject) => {
+    const request = http.request(new URL(`${baseUrl}/api/settings`), {
+      headers: { host: 'attacker.example' },
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  assert.equal(reboundApiStatus, 403);
+
+  const reboundProviderRequest = await new Promise((resolve, reject) => {
+    const request = http.request(new URL(`${baseUrl}/api/cover-letter`), {
+      method: 'POST',
+      headers: { host: 'attacker.example', 'content-type': 'application/json' },
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+    request.end(JSON.stringify({
+      provider: 'openai',
+      job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
+    }));
+  });
+  assert.equal(reboundProviderRequest, 403);
 });
 
 test('falls back to environment keys and reports recovery guidance when encrypted storage is damaged', async () => {

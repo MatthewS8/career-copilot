@@ -8,6 +8,7 @@ const publicDirectory = path.join(__dirname, 'public');
 const maxRequestBytes = 50_000;
 const providers = new Set(['openai', 'gemini', 'anthropic']);
 const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
+const keyStoreRecoveryMessage = 'Saved API keys could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc in the data directory to discard saved keys and start over.';
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -182,9 +183,13 @@ function createProviderKeyStore(dataDirectory) {
       data: encrypted.toString('base64'),
     });
     const temporaryPath = path.join(dataDirectory, `.provider-keys-${crypto.randomBytes(8).toString('hex')}.tmp`);
-    await fsPromises.writeFile(temporaryPath, record, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    await fsPromises.rename(temporaryPath, encryptedKeysPath);
-    await fsPromises.chmod(encryptedKeysPath, 0o600);
+    try {
+      await fsPromises.writeFile(temporaryPath, record, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      await fsPromises.rename(temporaryPath, encryptedKeysPath);
+      await fsPromises.chmod(encryptedKeysPath, 0o600);
+    } finally {
+      await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
+    }
   }
 
   function serializeWrite(callback) {
@@ -254,6 +259,17 @@ function isSameOrigin(request) {
   }
 }
 
+function hasLoopbackHost(request) {
+  const host = request.headers.host;
+  if (!host) return false;
+  try {
+    const hostname = new URL(`http://${host}`).hostname;
+    return ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
 async function handleSettings(request, response, url, keyStore) {
   if (request.method === 'GET') {
     try {
@@ -294,9 +310,7 @@ async function handleSettings(request, response, url, keyStore) {
     } catch (error) {
       console.error(`API key save failed (${error?.code || error?.name || 'Error'})`);
       sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
-        error: error?.code === 'KEY_STORE_CORRUPT'
-          ? 'Saved API keys could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc in the data directory to discard saved keys and start over.'
-          : 'Could not save the encrypted API key.',
+        error: error?.code === 'KEY_STORE_CORRUPT' ? keyStoreRecoveryMessage : 'Could not save the encrypted API key.',
       });
     }
     return;
@@ -314,9 +328,7 @@ async function handleSettings(request, response, url, keyStore) {
   } catch (error) {
     console.error(`API key removal failed (${error?.code || error?.name || 'Error'})`);
     sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
-      error: error?.code === 'KEY_STORE_CORRUPT'
-        ? 'Saved API keys could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc in the data directory to discard saved keys and start over.'
-        : 'Could not remove the saved API key.',
+      error: error?.code === 'KEY_STORE_CORRUPT' ? keyStoreRecoveryMessage : 'Could not remove the saved API key.',
     });
   }
 }
@@ -541,6 +553,11 @@ function createServer(options = {}) {
       return;
     }
     const pathname = url.pathname;
+
+    if (pathname.startsWith('/api/') && !hasLoopbackHost(request)) {
+      sendJson(response, 403, { error: 'JobFinder API access is limited to localhost.' });
+      return;
+    }
 
     if (pathname === '/api/cover-letter') {
       if (request.method !== 'POST') {
