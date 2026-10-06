@@ -4,7 +4,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const publicDirectory = path.join(__dirname, 'dist');
+const buildDirectory = path.join(__dirname, 'dist');
 const maxRequestBytes = 50_000;
 const providers = new Set(['openai', 'gemini', 'anthropic']);
 const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
@@ -629,8 +629,8 @@ function createServer(options = {}) {
       sendJson(response, 400, { error: 'Invalid request path.' });
       return;
     }
-    const filePath = path.resolve(publicDirectory, requestedPath);
-    if (!filePath.startsWith(`${publicDirectory}${path.sep}`)) {
+    const filePath = path.resolve(buildDirectory, requestedPath);
+    if (!filePath.startsWith(`${buildDirectory}${path.sep}`)) {
       sendJson(response, 404, { error: 'Not found.' });
       return;
     }

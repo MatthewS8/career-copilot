@@ -29,11 +29,20 @@ test('serves the app with security headers', async () => {
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(response.headers.get('cache-control'), 'no-store');
   const html = await response.text();
-  assert.match(html, /A clearer path to/);
-  assert.match(html, /option value="Remote"/);
-  assert.match(html, /data-view="settings"/);
-  assert.match(html, /provider-key-form/);
-  assert.match(html, /accept="[^"]*\.tex/);
+  assert.match(html, /<div id="app"><\/div>/);
+  const scriptPath = html.match(/<script[^>]+src="([^"]+\.js)"/)?.[1];
+  assert.ok(scriptPath);
+  const scriptResponse = await fetch(new URL(scriptPath, baseUrl));
+  assert.equal(scriptResponse.status, 200);
+  const script = await scriptResponse.text();
+  assert.match(script, /A clearer path to/);
+  assert.match(script, /data-view/);
+  assert.match(script, /provider-key-form/);
+  assert.match(script, /Autofill from resume/);
+  assert.match(script, /\.tex/);
+  const stylesheetPath = html.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
+  assert.ok(stylesheetPath);
+  assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
 });
 
 test('reports API key configuration status without returning any key', async () => {
@@ -560,7 +569,7 @@ test('rejects malformed JSON', async () => {
   assert.match((await response.json()).error, /valid JSON/);
 });
 
-test('blocks requests to paths outside the public directory', async () => {
+test('blocks requests to paths outside the built frontend directory', async () => {
   const response = await fetch(`${baseUrl}/%2e%2e/server.js`);
   assert.equal(response.status, 404);
 });

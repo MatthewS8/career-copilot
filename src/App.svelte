@@ -445,17 +445,17 @@
     </a>
     <div class="sidebar-label">WORKSPACE</div>
     <nav class="primary-nav" aria-label="Main navigation">
-      <button class: is-active={view === 'dashboard'} class="nav-item" type="button" data-view="dashboard" onclick={() => setView('dashboard')}>
+      <button class="nav-item" class:is-active={view === 'dashboard'} type="button" data-view="dashboard" onclick={() => setView('dashboard')}>
         <span class="nav-icon" aria-hidden="true">⌂</span> Overview
       </button>
-      <button class: is-active={view === 'profile'} class="nav-item" type="button" data-view="profile" onclick={() => setView('profile')}>
+      <button class="nav-item" class:is-active={view === 'profile'} type="button" data-view="profile" onclick={() => setView('profile')}>
         <span class="nav-icon" aria-hidden="true">◎</span> My profile
       </button>
-      <button class: is-active={view === 'jobs'} class="nav-item" type="button" data-view="jobs" onclick={() => setView('jobs')}>
+      <button class="nav-item" class:is-active={view === 'jobs'} type="button" data-view="jobs" onclick={() => setView('jobs')}>
         <span class="nav-icon" aria-hidden="true">▤</span> Saved jobs
         <span class="nav-count">{jobs.length}</span>
       </button>
-      <button class: is-active={view === 'settings'} class="nav-item" type="button" data-view="settings" onclick={() => setView('settings')}>
+      <button class="nav-item" class:is-active={view === 'settings'} type="button" data-view="settings" onclick={() => setView('settings')}>
         <span class="nav-icon" aria-hidden="true">⚙</span> API settings
       </button>
     </nav>
