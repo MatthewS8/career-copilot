@@ -4,8 +4,10 @@
   "description": "A personal job-search assistant for organizing leads and drafting applications.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "node --test"
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "start": "npm run build && node server.js",
+    "test": "npm run build && node --test"
   },
   "keywords": [
     "jobs",
@@ -13,5 +15,15 @@
     "assistant"
   ],
   "license": "MIT",
-  "type": "commonjs"
+  "type": "module",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "svelte": "^5.57.2",
+    "vite": "^6.4.4"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "svelte": "^5.57.2",
+    "vite": "^6.4.4"
+  }
 }

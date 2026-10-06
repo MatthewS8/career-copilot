@@ -4,7 +4,7 @@ const http = require('node:http');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const publicDirectory = path.join(__dirname, 'public');
+const publicDirectory = path.join(__dirname, 'dist');
 const maxRequestBytes = 50_000;
 const providers = new Set(['openai', 'gemini', 'anthropic']);
 const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
