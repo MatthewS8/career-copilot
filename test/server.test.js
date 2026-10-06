@@ -60,7 +60,6 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
   process.env.OPENAI_API_KEY = 'environment-fallback-key';
-  const origin = { origin: baseUrl };
   let providerAuthorization;
   global.fetch = async (url, options) => {
     providerAuthorization = options.headers.Authorization;
@@ -72,7 +71,10 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
   try {
     const saveResponse = await originalFetch(`${baseUrl}/api/settings/provider-key`, {
       method: 'POST',
-      headers: { ...origin, 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-jobfinder-settings': 'same-origin',
+      },
       body: JSON.stringify({ provider: 'openai', key: secret }),
     });
     assert.equal(saveResponse.status, 200);
@@ -109,7 +111,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
 
     const removeResponse = await originalFetch(`${baseUrl}/api/settings/provider-key?provider=openai`, {
       method: 'DELETE',
-      headers: origin,
+      headers: { 'x-jobfinder-settings': 'same-origin' },
     });
     assert.deepEqual(await removeResponse.json(), {
       removed: true,
@@ -138,6 +140,11 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
 });
 
 test('rejects cross-origin API key changes', async () => {
+  const missingOrigin = await fetch(`${baseUrl}/api/settings/provider-key?provider=openai`, {
+    method: 'DELETE',
+  });
+  assert.equal(missingOrigin.status, 403);
+
   const foreignOrigin = await fetch(`${baseUrl}/api/settings/provider-key`, {
     method: 'POST',
     headers: { origin: 'https://attacker.example', 'content-type': 'application/json' },
