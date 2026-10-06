@@ -14,7 +14,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
     "build": "npm run check && vite build && tsc --project tsconfig.server.json",
     "start": "npm run build && node build/server.js",
-    "test": "npm run build && node --test build/test"
+    "test": "npm run build && node --test build/test/server.test.js"
   },
   "keywords": [
     "jobs",

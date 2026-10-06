@@ -37,13 +37,28 @@ const keyNames: Record<Provider, string> = {
   gemini: 'GEMINI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
 };
-const keyStoreRecoveryMessage = 'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
+const keyStoreRecoveryMessage =
+  'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && typeof (error as ApiError).code === 'string'
+    ? (error as ApiError).code
+    : undefined;
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'Error';
+}
+
+function errorStatus(error: unknown): number | undefined {
+  return error instanceof Error ? (error as ApiError).status : undefined;
+}
 
 function send(
   response: http.ServerResponse,
@@ -54,7 +69,8 @@ function send(
   response.writeHead(status, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+    'Content-Security-Policy':
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
@@ -102,10 +118,12 @@ async function readRequestData(
 ): Promise<RequestData | null> {
   try {
     const data = await readJson(request);
-    return data && typeof data === 'object' && !Array.isArray(data) ? data as RequestData : {};
+    return data && typeof data === 'object' && !Array.isArray(data) ? (data as RequestData) : {};
   } catch (error) {
     const status = error instanceof Error ? (error as ApiError).status : undefined;
-    sendJson(response, status || 400, { error: status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
+    sendJson(response, status || 400, {
+      error: status === 413 ? 'Request is too large.' : 'Please send valid JSON.',
+    });
     return null;
   }
 }
@@ -125,12 +143,16 @@ async function getProviderKey(
   try {
     key = await keyStore.get(provider);
   } catch (error) {
-    console.error(`API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
+    console.error(
+      `API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`,
+    );
     sendJson(response, 500, { error: 'Could not read the configured API key.' });
     return null;
   }
   if (key) return key;
-  sendJson(response, 503, { error: `Add a key in API settings or configure ${keyNames[provider]} on the server.` });
+  sendJson(response, 503, {
+    error: `Add a key in API settings or configure ${keyNames[provider]} on the server.`,
+  });
   return null;
 }
 
@@ -164,7 +186,8 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
         await handle.sync();
         return key;
       } catch (createError) {
-        if (!(createError instanceof Error) || (createError as ApiError).code !== 'EEXIST') throw createError;
+        if (!(createError instanceof Error) || (createError as ApiError).code !== 'EEXIST')
+          throw createError;
         const existingKey = await fsPromises.readFile(masterKeyPath);
         if (existingKey.length !== 32) throw new Error('Invalid key encryption material');
         await fsPromises.chmod(masterKeyPath, 0o600);
@@ -177,7 +200,7 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
 
   function getMasterKey() {
     if (!masterKeyPromise) {
-      masterKeyPromise = initializeMasterKey().catch((error) => {
+      masterKeyPromise = initializeMasterKey().catch((error: unknown) => {
         masterKeyPromise = undefined;
         throw error;
       });
@@ -201,20 +224,31 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
         tag?: string;
         data?: string;
       };
-      if (record.version !== 1) throw new Error('Unsupported encrypted key data');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, Buffer.from(record.iv, 'base64'));
+      if (record.version !== 1 || !record.iv || !record.tag || !record.data) {
+        throw new Error('Unsupported encrypted key data');
+      }
+      const decipher = crypto.createDecipheriv(
+        'aes-256-gcm',
+        masterKey,
+        Buffer.from(record.iv, 'base64'),
+      );
       decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
       const plaintext = Buffer.concat([
         decipher.update(Buffer.from(record.data, 'base64')),
         decipher.final(),
       ]).toString('utf8');
       const keys: unknown = JSON.parse(plaintext);
-      if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new Error('Invalid encrypted key data');
+      if (!keys || typeof keys !== 'object' || Array.isArray(keys))
+        throw new Error('Invalid encrypted key data');
       return Object.fromEntries(
-        Object.entries(keys).filter(([provider, key]) => providers.has(provider as Provider) && typeof key === 'string'),
+        Object.entries(keys).filter(
+          ([provider, key]) => providers.has(provider as Provider) && typeof key === 'string',
+        ),
       ) as StoredKeys;
     } catch (cause) {
-      const error = new Error('Encrypted API key data could not be decrypted', { cause }) as ApiError;
+      const error = new Error('Encrypted API key data could not be decrypted', {
+        cause,
+      }) as ApiError;
       error.code = 'KEY_STORE_CORRUPT';
       throw error;
     }
@@ -231,7 +265,10 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
       tag: cipher.getAuthTag().toString('base64'),
       data: encrypted.toString('base64'),
     });
-    const temporaryPath = path.join(dataDirectory, `.provider-keys-${crypto.randomBytes(8).toString('hex')}.tmp`);
+    const temporaryPath = path.join(
+      dataDirectory,
+      `.provider-keys-${crypto.randomBytes(8).toString('hex')}.tmp`,
+    );
     let handle;
     try {
       handle = await fsPromises.open(temporaryPath, 'wx', 0o600);
@@ -263,7 +300,7 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
           storedKeysCache = keys;
           return keys;
         })
-        .catch((error) => {
+        .catch((error: unknown) => {
           storedKeysPromise = undefined;
           throw error;
         });
@@ -283,7 +320,9 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
         const keys = await getStoredKeys();
         return keys[provider] || process.env[keyNames[provider]] || null;
       } catch (error) {
-        console.error(`Encrypted API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
+        console.error(
+          `Encrypted API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`,
+        );
         return process.env[keyNames[provider]] || null;
       }
     },
@@ -294,22 +333,30 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
         keys = await getStoredKeys();
       } catch (error) {
         storageError = true;
-        console.error(`Encrypted API key status failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
+        console.error(
+          `Encrypted API key status failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`,
+        );
       }
       return {
         storageError,
-        providers: Object.fromEntries([...providers].map((provider) => [
-          provider,
-          {
-            configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
-            source: keys[provider] ? 'saved' : process.env[keyNames[provider]] ? 'environment' : 'none',
-          },
-        ])) as Awaited<ReturnType<ProviderKeyStore['status']>>['providers'],
+        providers: Object.fromEntries(
+          [...providers].map((provider) => [
+            provider,
+            {
+              configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
+              source: keys[provider]
+                ? 'saved'
+                : process.env[keyNames[provider]]
+                  ? 'environment'
+                  : 'none',
+            },
+          ]),
+        ) as Awaited<ReturnType<ProviderKeyStore['status']>>['providers'],
       };
     },
     async set(provider: Provider, key: string): Promise<void> {
       return serializeWrite(async () => {
-        const keys = { ...await getStoredKeys() };
+        const keys = { ...(await getStoredKeys()) };
         keys[provider] = key;
         await writeStoredKeys(keys);
         storedKeysCache = keys;
@@ -318,7 +365,7 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
     },
     async remove(provider: Provider): Promise<void> {
       return serializeWrite(async () => {
-        const keys = { ...await getStoredKeys() };
+        const keys = { ...(await getStoredKeys()) };
         Reflect.deleteProperty(keys, provider);
         await writeStoredKeys(keys);
         storedKeysCache = keys;
@@ -335,9 +382,11 @@ function isSameOrigin(request: http.IncomingMessage): boolean {
   if (!origin) return request.headers['sec-fetch-site'] === 'same-origin';
   try {
     const parsedOrigin = new URL(origin);
-    return ['http:', 'https:'].includes(parsedOrigin.protocol)
-      && ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname)
-      && parsedOrigin.host === host;
+    return (
+      ['http:', 'https:'].includes(parsedOrigin.protocol) &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(parsedOrigin.hostname) &&
+      parsedOrigin.host === host
+    );
   } catch {
     return false;
   }
@@ -364,13 +413,13 @@ async function handleSettings(
     try {
       sendJson(response, 200, await keyStore.status());
     } catch (error) {
-      console.error(`API key status failed (${error?.code || error?.name || 'Error'})`);
+      console.error(`API key status failed (${errorCode(error) || errorName(error)})`);
       sendJson(response, 500, { error: 'Could not read API key settings.' });
     }
     return;
   }
 
-  if (!['POST', 'DELETE'].includes(request.method)) {
+  if (!['POST', 'DELETE'].includes(request.method || '')) {
     sendJson(response, 405, { error: 'Method not allowed.' });
     return;
   }
@@ -397,9 +446,13 @@ async function handleSettings(
       await keyStore.set(provider, key);
       sendJson(response, 200, { saved: true, provider });
     } catch (error) {
-      console.error(`API key save failed (${error?.code || error?.name || 'Error'})`);
-      sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
-        error: error?.code === 'KEY_STORE_CORRUPT' ? keyStoreRecoveryMessage : 'Could not save the encrypted API key.',
+      const code = errorCode(error);
+      console.error(`API key save failed (${code || errorName(error)})`);
+      sendJson(response, code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
+        error:
+          code === 'KEY_STORE_CORRUPT'
+            ? keyStoreRecoveryMessage
+            : 'Could not save the encrypted API key.',
       });
     }
     return;
@@ -415,9 +468,13 @@ async function handleSettings(
       environmentConfigured: Boolean(process.env[keyNames[provider]]),
     });
   } catch (error) {
-    console.error(`API key removal failed (${error?.code || error?.name || 'Error'})`);
-    sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
-      error: error?.code === 'KEY_STORE_CORRUPT' ? keyStoreRecoveryMessage : 'Could not remove the saved API key.',
+    const code = errorCode(error);
+    console.error(`API key removal failed (${code || errorName(error)})`);
+    sendJson(response, code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
+      error:
+        code === 'KEY_STORE_CORRUPT'
+          ? keyStoreRecoveryMessage
+          : 'Could not remove the saved API key.',
     });
   }
 }
@@ -425,7 +482,7 @@ async function handleSettings(
 function parseJsonObject(value: string): Record<string, unknown> {
   const candidates = [value.trim()];
   for (const match of value.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
-    candidates.push(match[1].trim());
+    candidates.push((match[1] || '').trim());
   }
   const firstBrace = value.indexOf('{');
   const lastBrace = value.lastIndexOf('}');
@@ -506,7 +563,10 @@ async function providerRequest(
         ...(options.json ? { responseMimeType: 'application/json' } : {}),
       },
     };
-    extractText = (data) => data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('');
+    extractText = (data) =>
+      data.candidates?.[0]?.content?.parts
+        ?.map((part) => (typeof part.text === 'string' ? part.text : ''))
+        .join('');
   } else {
     url = 'https://api.anthropic.com/v1/messages';
     headers['x-api-key'] = key;
@@ -521,7 +581,7 @@ async function providerRequest(
     extractText = (data) =>
       data.content
         ?.filter((block) => block.type === 'text')
-        .map((block) => block.text)
+        .map((block) => (typeof block.text === 'string' ? block.text : ''))
         .join('');
   }
 
@@ -551,16 +611,16 @@ async function handleCoverLetter(
   const data = await readRequestData(request, response);
   if (!data) return;
 
-  const provider = text(data?.provider, 20);
+  const provider = text(data.provider, 20);
   if (!validateProvider(provider, response)) return;
 
   const profile =
     data.profile && typeof data.profile === 'object' && !Array.isArray(data.profile)
-      ? data.profile as RequestData
+      ? (data.profile as RequestData)
       : {};
   const job =
     data.job && typeof data.job === 'object' && !Array.isArray(data.job)
-      ? data.job as RequestData
+      ? (data.job as RequestData)
       : {};
   const title = text(job.title, 200);
   const company = text(job.company, 200);
@@ -597,7 +657,10 @@ async function handleCoverLetter(
     );
     sendJson(response, 200, { letter });
   } catch {
-    sendJson(response, 502, { error: 'The AI provider could not generate a letter. Check its status and server configuration, then try again.' });
+    sendJson(response, 502, {
+      error:
+        'The AI provider could not generate a letter. Check its status and server configuration, then try again.',
+    });
   }
 }
 
@@ -609,14 +672,14 @@ async function handleProfileExtraction(
   const data = await readRequestData(request, response);
   if (!data) return;
 
-  const provider = text(data?.provider, 20);
+  const provider = text(data.provider, 20);
   if (!validateProvider(provider, response)) return;
-  const source = text(data?.source, 20);
+  const source = text(data.source, 20);
   if (!['resume', 'linkedin'].includes(source)) {
     sendJson(response, 400, { error: 'Choose resume or LinkedIn profile text.' });
     return;
   }
-  const content = text(data?.content, 20_000);
+  const content = text(data.content, 20_000);
   if (!content) {
     sendJson(response, 400, { error: 'Add resume or LinkedIn profile text first.' });
     return;
@@ -644,85 +707,109 @@ async function handleProfileExtraction(
       { temperature: 0, maxTokens: 2_000, maxCharacters: 40_000, json: true },
     );
     const extracted = parseJsonObject(result);
-    const profile = Object.fromEntries(fields.map((field) => [field, text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000)]));
+    const profile = Object.fromEntries(
+      fields.map((field) => [
+        field,
+        text(extracted[field], field === 'experience' || field === 'priorities' ? 2_000 : 1_000),
+      ]),
+    );
     profile.workStyle = normalizeWorkStyle(extracted.workStyle);
     if (!Object.values(profile).some(Boolean)) throw new Error('No profile data found');
     sendJson(response, 200, { profile });
   } catch (error) {
-    console.error(`Profile extraction failed (${provider}, ${error?.status ?? 'unknown'}, ${error?.name || 'Error'})`);
-    sendJson(response, 502, { error: 'Could not extract profile details. Check the provider configuration and try again.' });
+    const status = errorStatus(error);
+    console.error(
+      `Profile extraction failed (${provider}, ${String(status ?? 'unknown')}, ${errorName(error)})`,
+    );
+    sendJson(response, 502, {
+      error: 'Could not extract profile details. Check the provider configuration and try again.',
+    });
   }
 }
 
 function createServer(options: { dataDirectory?: string } = {}): http.Server {
-  const dataDirectory = options.dataDirectory
-    || process.env.JOBFINDER_DATA_DIR
-    || path.join(rootDirectory, '.data');
+  const dataDirectory =
+    options.dataDirectory || process.env.JOBFINDER_DATA_DIR || path.join(rootDirectory, '.data');
   const keyStore = createProviderKeyStore(dataDirectory);
-  return http.createServer(async (request, response) => {
-    let url;
-    try {
-      url = new URL(request.url || '/', 'http://localhost');
-    } catch {
-      sendJson(response, 400, { error: 'Invalid request URL.' });
-      return;
-    }
-    const pathname = url.pathname;
-
-    if (pathname.startsWith('/api/') && !hasLoopbackHost(request)) {
-      sendJson(response, 403, { error: 'JobFinder API access is limited to localhost.' });
-      return;
-    }
-
-    if (pathname === '/api/cover-letter') {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { error: 'Method not allowed.' });
-        return;
+  return http.createServer((request, response) => {
+    void handleRequest(request, response, keyStore).catch((error: unknown) => {
+      console.error(`Request failed (${errorName(error)})`);
+      if (response.headersSent) {
+        response.destroy();
+      } else {
+        sendJson(response, 500, { error: 'The request could not be completed.' });
       }
-      await handleCoverLetter(request, response, keyStore);
-      return;
-    }
+    });
+  });
+}
 
-    if (pathname === '/api/extract-profile') {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { error: 'Method not allowed.' });
-        return;
-      }
-      await handleProfileExtraction(request, response, keyStore);
-      return;
-    }
+async function handleRequest(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  keyStore: ProviderKeyStore,
+): Promise<void> {
+  let url;
+  try {
+    url = new URL(request.url || '/', 'http://localhost');
+  } catch {
+    sendJson(response, 400, { error: 'Invalid request URL.' });
+    return;
+  }
+  const pathname = url.pathname;
 
-    if (pathname === '/api/settings' || pathname === '/api/settings/provider-key') {
-      await handleSettings(request, response, url, keyStore);
-      return;
-    }
+  if (pathname.startsWith('/api/') && !hasLoopbackHost(request)) {
+    sendJson(response, 403, { error: 'JobFinder API access is limited to localhost.' });
+    return;
+  }
 
-    if (!['GET', 'HEAD'].includes(request.method)) {
+  if (pathname === '/api/cover-letter') {
+    if (request.method !== 'POST') {
       sendJson(response, 405, { error: 'Method not allowed.' });
       return;
     }
+    await handleCoverLetter(request, response, keyStore);
+    return;
+  }
 
-    let requestedPath: string;
-    try {
-      requestedPath = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
-    } catch {
-      sendJson(response, 400, { error: 'Invalid request path.' });
+  if (pathname === '/api/extract-profile') {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'Method not allowed.' });
       return;
     }
-    const filePath = path.resolve(buildDirectory, requestedPath);
-    if (!filePath.startsWith(`${buildDirectory}${path.sep}`)) {
+    await handleProfileExtraction(request, response, keyStore);
+    return;
+  }
+
+  if (pathname === '/api/settings' || pathname === '/api/settings/provider-key') {
+    await handleSettings(request, response, url, keyStore);
+    return;
+  }
+
+  if (!['GET', 'HEAD'].includes(request.method || '')) {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return;
+  }
+
+  let requestedPath: string;
+  try {
+    requestedPath = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
+  } catch {
+    sendJson(response, 400, { error: 'Invalid request path.' });
+    return;
+  }
+  const filePath = path.resolve(buildDirectory, requestedPath);
+  if (!filePath.startsWith(`${buildDirectory}${path.sep}`)) {
+    sendJson(response, 404, { error: 'Not found.' });
+    return;
+  }
+
+  fs.readFile(filePath, (error, contents) => {
+    if (error) {
       sendJson(response, 404, { error: 'Not found.' });
       return;
     }
-
-    fs.readFile(filePath, (error, contents) => {
-      if (error) {
-        sendJson(response, 404, { error: 'Not found.' });
-        return;
-      }
-      const contentType = mimeTypes[path.extname(filePath)] || 'application/octet-stream';
-      send(response, 200, contentType, request.method === 'HEAD' ? '' : contents);
-    });
+    const contentType = mimeTypes[path.extname(filePath)] || 'application/octet-stream';
+    send(response, 200, contentType, request.method === 'HEAD' ? '' : contents);
   });
 }
 
@@ -730,7 +817,7 @@ if (require.main === module) {
   const host = process.env.HOST || '127.0.0.1';
   const port = Number(process.env.PORT) || 3000;
   createServer().listen(port, host, () => {
-    console.log(`JobFinder is available at http://${host}:${port}`);
+    console.log(`JobFinder is available at http://${host}:${port.toString()}`);
   });
 }
 
