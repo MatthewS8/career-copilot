@@ -73,7 +73,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-jobfinder-settings': 'same-origin',
+        origin: baseUrl,
       },
       body: JSON.stringify({ provider: 'openai', key: secret }),
     });
@@ -111,7 +111,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
 
     const removeResponse = await originalFetch(`${baseUrl}/api/settings/provider-key?provider=openai`, {
       method: 'DELETE',
-      headers: { 'x-jobfinder-settings': 'same-origin' },
+      headers: { 'sec-fetch-site': 'same-origin' },
     });
     assert.deepEqual(await removeResponse.json(), {
       removed: true,
@@ -236,6 +236,18 @@ test('falls back to environment keys and reports recovery guidance when encrypte
     });
     assert.equal(saveResponse.status, 503);
     assert.match((await saveResponse.json()).error, /remove provider-keys\.enc/);
+
+    await fs.rm(path.join(damagedDirectory, 'provider-keys.enc'));
+    const resetResponse = await originalFetch(`${damagedUrl}/api/settings/provider-key`, {
+      method: 'POST',
+      headers: { origin: damagedUrl, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', key: 'reset-key' }),
+    });
+    assert.equal(resetResponse.status, 200);
+    assert.deepEqual((await (await originalFetch(`${damagedUrl}/api/settings`)).json()).providers.openai, {
+      configured: true,
+      source: 'saved',
+    });
   } finally {
     global.fetch = originalFetch;
     console.error = originalConsoleError;

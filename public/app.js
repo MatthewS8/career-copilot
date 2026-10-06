@@ -168,10 +168,7 @@ document.querySelectorAll('.provider-key-form').forEach((form) => {
     try {
       const response = await fetch('/api/settings/provider-key', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-JobFinder-Settings': 'same-origin',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, key: input.value }),
       });
       const data = await response.json();
@@ -197,7 +194,6 @@ document.querySelectorAll('.remove-provider-key').forEach((button) => {
     try {
       const response = await fetch(`/api/settings/provider-key?provider=${encodeURIComponent(provider)}`, {
         method: 'DELETE',
-        headers: { 'X-JobFinder-Settings': 'same-origin' },
       });
       const data = await response.json();
       if (!response.ok) throw new Error(settingsResponseError(response, data));

@@ -8,7 +8,7 @@ const publicDirectory = path.join(__dirname, 'public');
 const maxRequestBytes = 50_000;
 const providers = new Set(['openai', 'gemini', 'anthropic']);
 const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
-const keyStoreRecoveryMessage = 'Saved API keys could not be decrypted. Restore the matching files from backup, or stop JobFinder, remove provider-keys.enc in the data directory, and restart to discard saved keys.';
+const keyStoreRecoveryMessage = 'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -192,6 +192,14 @@ function createProviderKeyStore(dataDirectory) {
       handle = null;
       await fsPromises.rename(temporaryPath, encryptedKeysPath);
       await fsPromises.chmod(encryptedKeysPath, 0o600);
+      if (process.platform !== 'win32') {
+        const directoryHandle = await fsPromises.open(dataDirectory, 'r');
+        try {
+          await directoryHandle.sync();
+        } finally {
+          await directoryHandle.close();
+        }
+      }
     } finally {
       await handle?.close().catch(() => {});
       await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
@@ -201,10 +209,15 @@ function createProviderKeyStore(dataDirectory) {
   function getStoredKeys() {
     if (storedKeysCache) return Promise.resolve(storedKeysCache);
     if (!storedKeysPromise) {
-      storedKeysPromise = readStoredKeys().then((keys) => {
-        storedKeysCache = keys;
-        return keys;
-      });
+      storedKeysPromise = readStoredKeys()
+        .then((keys) => {
+          storedKeysCache = keys;
+          return keys;
+        })
+        .catch((error) => {
+          storedKeysPromise = null;
+          throw error;
+        });
     }
     return storedKeysPromise;
   }
@@ -270,10 +283,7 @@ function isSameOrigin(request) {
   const origin = request.headers.origin;
   const host = request.headers.host;
   if (!host || !hasLoopbackHost(request)) return false;
-  if (!origin) {
-    return request.headers['sec-fetch-site'] === 'same-origin'
-      || request.headers['x-jobfinder-settings'] === 'same-origin';
-  }
+  if (!origin) return request.headers['sec-fetch-site'] === 'same-origin';
   try {
     const parsedOrigin = new URL(origin);
     return ['http:', 'https:'].includes(parsedOrigin.protocol)
