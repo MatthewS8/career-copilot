@@ -1,0 +1,17 @@
+{
+  "name": "jobfinder",
+  "version": "1.0.0",
+  "description": "A personal job-search assistant for organizing leads and drafting applications.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "jobs",
+    "career",
+    "assistant"
+  ],
+  "license": "MIT",
+  "type": "commonjs"
+}
