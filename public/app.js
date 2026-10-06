@@ -120,6 +120,9 @@ async function refreshProviderSettings() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Could not load API key settings.');
     document.querySelector('#settings-storage-warning').hidden = !data.storageError;
+    if (data.storageError) {
+      document.querySelector('#settings-storage-message').textContent = 'The saved-key files could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc to discard all saved keys and start over. Server environment keys can still be used.';
+    }
     for (const [provider, state] of Object.entries(data.providers || {})) {
       const label = document.querySelector(`#provider-state-${provider}`);
       const removeButton = document.querySelector(`[data-provider="${provider}"] .remove-provider-key`);
@@ -137,7 +140,7 @@ async function refreshProviderSettings() {
     }
   } catch {
     document.querySelector('#settings-storage-warning').hidden = false;
-    document.querySelector('#settings-storage-warning').textContent = 'Could not load API key settings. Check the server and private data files.';
+    document.querySelector('#settings-storage-message').textContent = 'Could not load API key settings. Check the server and private data files.';
     document.querySelectorAll('.provider-state').forEach((label) => {
       label.textContent = 'Could not load key status.';
     });

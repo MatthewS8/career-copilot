@@ -84,9 +84,11 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
     assert.equal(record.version, 1);
     const masterKeyPath = path.join(dataDirectory, 'key-encryption.key');
     assert.equal((await fs.readFile(masterKeyPath)).length, 32);
-    assert.equal((await fs.stat(masterKeyPath)).mode & 0o777, 0o600);
-    assert.equal((await fs.stat(encryptedPath)).mode & 0o777, 0o600);
-    assert.equal((await fs.stat(dataDirectory)).mode & 0o777, 0o700);
+    if (process.platform !== 'win32') {
+      assert.equal((await fs.stat(masterKeyPath)).mode & 0o777, 0o600);
+      assert.equal((await fs.stat(encryptedPath)).mode & 0o777, 0o600);
+      assert.equal((await fs.stat(dataDirectory)).mode & 0o777, 0o700);
+    }
 
     const statusResponse = await originalFetch(`${baseUrl}/api/settings`);
     const status = await statusResponse.json();
@@ -197,7 +199,7 @@ test('falls back to environment keys and reports recovery guidance when encrypte
       body: JSON.stringify({ provider: 'openai', key: 'new-key' }),
     });
     assert.equal(saveResponse.status, 503);
-    assert.match((await saveResponse.json()).error, /Restore the matching encryption/);
+    assert.match((await saveResponse.json()).error, /remove provider-keys\.enc/);
   } finally {
     global.fetch = originalFetch;
     console.error = originalConsoleError;

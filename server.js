@@ -295,7 +295,7 @@ async function handleSettings(request, response, url, keyStore) {
       console.error(`API key save failed (${error?.code || error?.name || 'Error'})`);
       sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
         error: error?.code === 'KEY_STORE_CORRUPT'
-          ? 'Saved API keys could not be decrypted. Restore the matching encryption and key files from backup before changing saved keys.'
+          ? 'Saved API keys could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc in the data directory to discard saved keys and start over.'
           : 'Could not save the encrypted API key.',
       });
     }
@@ -315,7 +315,7 @@ async function handleSettings(request, response, url, keyStore) {
     console.error(`API key removal failed (${error?.code || error?.name || 'Error'})`);
     sendJson(response, error?.code === 'KEY_STORE_CORRUPT' ? 503 : 500, {
       error: error?.code === 'KEY_STORE_CORRUPT'
-        ? 'Saved API keys could not be decrypted. Restore the matching encryption and key files from backup before changing saved keys.'
+        ? 'Saved API keys could not be decrypted. Restore the matching files from backup, or remove provider-keys.enc in the data directory to discard saved keys and start over.'
         : 'Could not remove the saved API key.',
     });
   }
