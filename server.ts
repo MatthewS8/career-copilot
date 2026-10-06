@@ -1,22 +1,56 @@
-const fs = require('node:fs');
-const fsPromises = require('node:fs/promises');
-const http = require('node:http');
-const path = require('node:path');
-const crypto = require('node:crypto');
+import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
+import * as http from 'node:http';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 
-const buildDirectory = path.join(__dirname, 'dist');
+const rootDirectory = path.resolve(__dirname, '..');
+const buildDirectory = path.join(rootDirectory, 'dist');
 const maxRequestBytes = 50_000;
-const providers = new Set(['openai', 'gemini', 'anthropic']);
-const keyNames = { openai: 'OPENAI_API_KEY', gemini: 'GEMINI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
+type Provider = 'openai' | 'gemini' | 'anthropic';
+type StoredKeys = Partial<Record<Provider, string>>;
+type ApiError = Error & { code?: string; status?: number };
+type RequestData = Record<string, unknown>;
+type ProviderRequestOptions = {
+  temperature?: number;
+  maxTokens?: number;
+  maxCharacters?: number;
+  json?: boolean;
+};
+type ProviderKeyStore = {
+  get(provider: Provider): Promise<string | null>;
+  status(): Promise<{
+    storageError: boolean;
+    providers: Record<Provider, { configured: boolean; source: 'saved' | 'environment' | 'none' }>;
+  }>;
+  set(provider: Provider, key: string): Promise<void>;
+  remove(provider: Provider): Promise<void>;
+};
+type ProviderResponse = {
+  choices?: { message?: { content?: unknown } }[];
+  candidates?: { content?: { parts?: { text?: unknown }[] } }[];
+  content?: { type?: unknown; text?: unknown }[];
+};
+const providers = new Set<Provider>(['openai', 'gemini', 'anthropic']);
+const keyNames: Record<Provider, string> = {
+  openai: 'OPENAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+};
 const keyStoreRecoveryMessage = 'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
-const mimeTypes = {
+const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
 
-function send(response, status, contentType, body) {
+function send(
+  response: http.ServerResponse,
+  status: number,
+  contentType: string,
+  body: string | Buffer,
+): void {
   response.writeHead(status, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store',
@@ -28,16 +62,16 @@ function send(response, status, contentType, body) {
   response.end(body);
 }
 
-function sendJson(response, status, data) {
+function sendJson(response: http.ServerResponse, status: number, data: unknown): void {
   send(response, status, 'application/json; charset=utf-8', JSON.stringify(data));
 }
 
-function readJson(request) {
+function readJson(request: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const chunks = [];
+    const chunks: Buffer[] = [];
     let size = 0;
 
-    request.on('data', (chunk) => {
+    request.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > maxRequestBytes) {
         reject(Object.assign(new Error('Request body too large'), { status: 413 }));
@@ -58,32 +92,40 @@ function readJson(request) {
   });
 }
 
-function text(value, maxLength) {
+function text(value: unknown, maxLength: number): string {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
-async function readRequestData(request, response) {
+async function readRequestData(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): Promise<RequestData | null> {
   try {
     const data = await readJson(request);
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    return data && typeof data === 'object' && !Array.isArray(data) ? data as RequestData : {};
   } catch (error) {
-    sendJson(response, error.status || 400, { error: error.status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
+    const status = error instanceof Error ? (error as ApiError).status : undefined;
+    sendJson(response, status || 400, { error: status === 413 ? 'Request is too large.' : 'Please send valid JSON.' });
     return null;
   }
 }
 
-function validateProvider(provider, response) {
-  if (providers.has(provider)) return true;
+function validateProvider(provider: string, response: http.ServerResponse): provider is Provider {
+  if (providers.has(provider as Provider)) return true;
   sendJson(response, 400, { error: 'Choose OpenAI, Gemini, or Anthropic.' });
   return false;
 }
 
-async function getProviderKey(provider, keyStore, response) {
+async function getProviderKey(
+  provider: Provider,
+  keyStore: ProviderKeyStore,
+  response: http.ServerResponse,
+): Promise<string | null> {
   let key;
   try {
     key = await keyStore.get(provider);
   } catch (error) {
-    console.error(`API key lookup failed (${error?.code || error?.name || 'Error'})`);
+    console.error(`API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
     sendJson(response, 500, { error: 'Could not read the configured API key.' });
     return null;
   }
@@ -92,13 +134,13 @@ async function getProviderKey(provider, keyStore, response) {
   return null;
 }
 
-function createProviderKeyStore(dataDirectory) {
+function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
   const masterKeyPath = path.join(dataDirectory, 'key-encryption.key');
   const encryptedKeysPath = path.join(dataDirectory, 'provider-keys.enc');
   let writeQueue = Promise.resolve();
-  let masterKeyPromise;
-  let storedKeysCache;
-  let storedKeysPromise;
+  let masterKeyPromise: Promise<Buffer> | undefined;
+  let storedKeysCache: StoredKeys | undefined;
+  let storedKeysPromise: Promise<StoredKeys> | undefined;
 
   async function ensureDirectory() {
     await fsPromises.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
@@ -113,7 +155,7 @@ function createProviderKeyStore(dataDirectory) {
       await fsPromises.chmod(masterKeyPath, 0o600);
       return key;
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      if (!(error instanceof Error) || (error as ApiError).code !== 'ENOENT') throw error;
       const key = crypto.randomBytes(32);
       let handle;
       try {
@@ -122,7 +164,7 @@ function createProviderKeyStore(dataDirectory) {
         await handle.sync();
         return key;
       } catch (createError) {
-        if (createError.code !== 'EEXIST') throw createError;
+        if (!(createError instanceof Error) || (createError as ApiError).code !== 'EEXIST') throw createError;
         const existingKey = await fsPromises.readFile(masterKeyPath);
         if (existingKey.length !== 32) throw new Error('Invalid key encryption material');
         await fsPromises.chmod(masterKeyPath, 0o600);
@@ -136,7 +178,7 @@ function createProviderKeyStore(dataDirectory) {
   function getMasterKey() {
     if (!masterKeyPromise) {
       masterKeyPromise = initializeMasterKey().catch((error) => {
-        masterKeyPromise = null;
+        masterKeyPromise = undefined;
         throw error;
       });
     }
@@ -149,11 +191,16 @@ function createProviderKeyStore(dataDirectory) {
     try {
       contents = await fsPromises.readFile(encryptedKeysPath, 'utf8');
     } catch (error) {
-      if (error.code === 'ENOENT') return {};
+      if (error instanceof Error && (error as ApiError).code === 'ENOENT') return {};
       throw error;
     }
     try {
-      const record = JSON.parse(contents);
+      const record = JSON.parse(contents) as {
+        version?: number;
+        iv?: string;
+        tag?: string;
+        data?: string;
+      };
       if (record.version !== 1) throw new Error('Unsupported encrypted key data');
       const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, Buffer.from(record.iv, 'base64'));
       decipher.setAuthTag(Buffer.from(record.tag, 'base64'));
@@ -161,17 +208,19 @@ function createProviderKeyStore(dataDirectory) {
         decipher.update(Buffer.from(record.data, 'base64')),
         decipher.final(),
       ]).toString('utf8');
-      const keys = JSON.parse(plaintext);
+      const keys: unknown = JSON.parse(plaintext);
       if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new Error('Invalid encrypted key data');
-      return Object.fromEntries(Object.entries(keys).filter(([provider, key]) => providers.has(provider) && typeof key === 'string'));
-    } catch {
-      const error = new Error('Encrypted API key data could not be decrypted');
+      return Object.fromEntries(
+        Object.entries(keys).filter(([provider, key]) => providers.has(provider as Provider) && typeof key === 'string'),
+      ) as StoredKeys;
+    } catch (cause) {
+      const error = new Error('Encrypted API key data could not be decrypted', { cause }) as ApiError;
       error.code = 'KEY_STORE_CORRUPT';
       throw error;
     }
   }
 
-  async function writeStoredKeys(keys) {
+  async function writeStoredKeys(keys: StoredKeys): Promise<void> {
     const masterKey = await getMasterKey();
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', masterKey, iv);
@@ -206,7 +255,7 @@ function createProviderKeyStore(dataDirectory) {
     }
   }
 
-  function getStoredKeys() {
+  function getStoredKeys(): Promise<StoredKeys> {
     if (storedKeysCache) return Promise.resolve(storedKeysCache);
     if (!storedKeysPromise) {
       storedKeysPromise = readStoredKeys()
@@ -215,37 +264,37 @@ function createProviderKeyStore(dataDirectory) {
           return keys;
         })
         .catch((error) => {
-          storedKeysPromise = null;
+          storedKeysPromise = undefined;
           throw error;
         });
     }
     return storedKeysPromise;
   }
 
-  function serializeWrite(callback) {
+  function serializeWrite(callback: () => Promise<void>): Promise<void> {
     const operation = writeQueue.then(callback);
     writeQueue = operation.catch(() => {});
     return operation;
   }
 
   return {
-    async get(provider) {
+    async get(provider: Provider): Promise<string | null> {
       try {
         const keys = await getStoredKeys();
         return keys[provider] || process.env[keyNames[provider]] || null;
       } catch (error) {
-        console.error(`Encrypted API key lookup failed (${error?.code || error?.name || 'Error'})`);
+        console.error(`Encrypted API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
         return process.env[keyNames[provider]] || null;
       }
     },
-    async status() {
-      let keys = {};
+    async status(): ReturnType<ProviderKeyStore['status']> {
+      let keys: StoredKeys = {};
       let storageError = false;
       try {
         keys = await getStoredKeys();
       } catch (error) {
         storageError = true;
-        console.error(`Encrypted API key status failed (${error?.code || error?.name || 'Error'})`);
+        console.error(`Encrypted API key status failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`);
       }
       return {
         storageError,
@@ -255,10 +304,10 @@ function createProviderKeyStore(dataDirectory) {
             configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
             source: keys[provider] ? 'saved' : process.env[keyNames[provider]] ? 'environment' : 'none',
           },
-        ])),
+        ])) as Awaited<ReturnType<ProviderKeyStore['status']>>['providers'],
       };
     },
-    async set(provider, key) {
+    async set(provider: Provider, key: string): Promise<void> {
       return serializeWrite(async () => {
         const keys = { ...await getStoredKeys() };
         keys[provider] = key;
@@ -267,10 +316,10 @@ function createProviderKeyStore(dataDirectory) {
         storedKeysPromise = Promise.resolve(keys);
       });
     },
-    async remove(provider) {
+    async remove(provider: Provider): Promise<void> {
       return serializeWrite(async () => {
         const keys = { ...await getStoredKeys() };
-        delete keys[provider];
+        Reflect.deleteProperty(keys, provider);
         await writeStoredKeys(keys);
         storedKeysCache = keys;
         storedKeysPromise = Promise.resolve(keys);
@@ -279,7 +328,7 @@ function createProviderKeyStore(dataDirectory) {
   };
 }
 
-function isSameOrigin(request) {
+function isSameOrigin(request: http.IncomingMessage): boolean {
   const origin = request.headers.origin;
   const host = request.headers.host;
   if (!host || !hasLoopbackHost(request)) return false;
@@ -294,7 +343,7 @@ function isSameOrigin(request) {
   }
 }
 
-function hasLoopbackHost(request) {
+function hasLoopbackHost(request: http.IncomingMessage): boolean {
   const host = request.headers.host;
   if (!host) return false;
   try {
@@ -305,7 +354,12 @@ function hasLoopbackHost(request) {
   }
 }
 
-async function handleSettings(request, response, url, keyStore) {
+async function handleSettings(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  url: URL,
+  keyStore: ProviderKeyStore,
+): Promise<void> {
   if (request.method === 'GET') {
     try {
       sendJson(response, 200, await keyStore.status());
@@ -368,7 +422,7 @@ async function handleSettings(request, response, url, keyStore) {
   }
 }
 
-function parseJsonObject(value) {
+function parseJsonObject(value: string): Record<string, unknown> {
   const candidates = [value.trim()];
   for (const match of value.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
     candidates.push(match[1].trim());
@@ -381,8 +435,10 @@ function parseJsonObject(value) {
 
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
     } catch {
       continue;
     }
@@ -390,8 +446,8 @@ function parseJsonObject(value) {
   throw new Error('Invalid profile data');
 }
 
-function normalizeWorkStyle(value) {
-  const aliases = {
+function normalizeWorkStyle(value: unknown): string {
+  const aliases: Record<string, string> = {
     remote: 'Remote',
     'remote first': 'Remote',
     'remote-first': 'Remote',
@@ -409,11 +465,17 @@ function normalizeWorkStyle(value) {
   return aliases[normalized] || '';
 }
 
-async function providerRequest(provider, key, prompt, instructions, options = {}) {
-  let url;
-  let headers = { 'Content-Type': 'application/json' };
-  let body;
-  let extractText;
+async function providerRequest(
+  provider: Provider,
+  key: string,
+  prompt: string,
+  instructions: string,
+  options: ProviderRequestOptions = {},
+): Promise<string> {
+  let url: string;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  let body: Record<string, unknown>;
+  let extractText: (data: ProviderResponse) => unknown;
 
   if (provider === 'openai') {
     url = 'https://api.openai.com/v1/chat/completions';
@@ -456,7 +518,11 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
       messages: [{ role: 'user', content: prompt }],
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
     };
-    extractText = (data) => data.content?.filter((block) => block.type === 'text').map((block) => block.text).join('');
+    extractText = (data) =>
+      data.content
+        ?.filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
   }
 
   const response = await fetch(url, {
@@ -466,26 +532,36 @@ async function providerRequest(provider, key, prompt, instructions, options = {}
     signal: AbortSignal.timeout(45_000),
   });
   if (!response.ok) {
-    const error = new Error('AI provider request failed');
+    const error = new Error('AI provider request failed') as ApiError;
     error.status = response.status;
     throw error;
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as ProviderResponse;
   const result = extractText(data);
   if (typeof result !== 'string' || !result.trim()) throw new Error('AI provider returned no text');
   return result.trim().slice(0, options.maxCharacters ?? 12_000);
 }
 
-async function handleCoverLetter(request, response, keyStore) {
+async function handleCoverLetter(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  keyStore: ProviderKeyStore,
+): Promise<void> {
   const data = await readRequestData(request, response);
   if (!data) return;
 
   const provider = text(data?.provider, 20);
   if (!validateProvider(provider, response)) return;
 
-  const profile = data.profile && typeof data.profile === 'object' ? data.profile : {};
-  const job = data.job && typeof data.job === 'object' ? data.job : {};
+  const profile =
+    data.profile && typeof data.profile === 'object' && !Array.isArray(data.profile)
+      ? data.profile as RequestData
+      : {};
+  const job =
+    data.job && typeof data.job === 'object' && !Array.isArray(data.job)
+      ? data.job as RequestData
+      : {};
   const title = text(job.title, 200);
   const company = text(job.company, 200);
   const description = text(job.description, 15_000);
@@ -525,7 +601,11 @@ async function handleCoverLetter(request, response, keyStore) {
   }
 }
 
-async function handleProfileExtraction(request, response, keyStore) {
+async function handleProfileExtraction(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  keyStore: ProviderKeyStore,
+): Promise<void> {
   const data = await readRequestData(request, response);
   if (!data) return;
 
@@ -574,15 +654,15 @@ async function handleProfileExtraction(request, response, keyStore) {
   }
 }
 
-function createServer(options = {}) {
+function createServer(options: { dataDirectory?: string } = {}): http.Server {
   const dataDirectory = options.dataDirectory
     || process.env.JOBFINDER_DATA_DIR
-    || path.join(__dirname, '.data');
+    || path.join(rootDirectory, '.data');
   const keyStore = createProviderKeyStore(dataDirectory);
   return http.createServer(async (request, response) => {
     let url;
     try {
-      url = new URL(request.url, 'http://localhost');
+      url = new URL(request.url || '/', 'http://localhost');
     } catch {
       sendJson(response, 400, { error: 'Invalid request URL.' });
       return;
@@ -622,7 +702,7 @@ function createServer(options = {}) {
       return;
     }
 
-    let requestedPath;
+    let requestedPath: string;
     try {
       requestedPath = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
     } catch {
@@ -654,4 +734,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createServer };
+export { createServer };

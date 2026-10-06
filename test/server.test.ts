@@ -1,10 +1,10 @@
-const assert = require('node:assert/strict');
-const { after, before, test } = require('node:test');
-const fs = require('node:fs/promises');
-const http = require('node:http');
-const os = require('node:os');
-const path = require('node:path');
-const { createServer } = require('../server');
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import * as fs from 'node:fs/promises';
+import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createServer } from '../server';
 
 let server;
 let baseUrl;
@@ -506,7 +506,7 @@ for (const configuration of [
       configuration.checkRequest(outboundRequest);
     } finally {
       global.fetch = originalFetch;
-      if (oldKey === undefined) delete process.env[configuration.keyName];
+      if (oldKey === undefined) Reflect.deleteProperty(process.env, configuration.keyName);
       else process.env[configuration.keyName] = oldKey;
     }
   });

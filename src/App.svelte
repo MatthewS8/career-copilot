@@ -1,12 +1,38 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
+
+  type Provider = 'openai' | 'gemini' | 'anthropic';
+  type ProviderState = { configured: boolean; source: 'saved' | 'environment' | 'none' };
+  type JobStatus = 'Saved' | 'Applying' | 'Applied' | 'Interviewing' | 'Archived';
+  type Job = {
+    id: string;
+    title: string;
+    company: string;
+    url: string;
+    description: string;
+    notes: string;
+    status: JobStatus;
+    addedAt: string;
+  };
+  type Profile = {
+    name: string;
+    linkedin: string;
+    roles: string;
+    location: string;
+    workStyle: string;
+    skills: string;
+    priorities: string;
+    experience: string;
+    resume: string;
+  };
+  type AutofillProfileField = Exclude<keyof Profile, 'linkedin' | 'resume'>;
 
   const PROFILE_KEY = 'jobfinder.profile.v1';
   const JOBS_KEY = 'jobfinder.jobs.v1';
-  const statuses = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
-  const providers = ['openai', 'gemini', 'anthropic'];
+  const statuses: JobStatus[] = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
+  const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
   const providerNames = { openai: 'OpenAI', gemini: 'Google Gemini', anthropic: 'Anthropic Claude' };
-  const emptyProfile = {
+  const emptyProfile: Profile = {
     name: '',
     linkedin: '',
     roles: '',
@@ -18,39 +44,38 @@
     resume: '',
   };
 
-  function readStorage(key, fallback) {
+  function readStorage<T>(key: string, fallback: T): T {
     try {
-      return JSON.parse(localStorage.getItem(key)) ?? fallback;
+      return JSON.parse(localStorage.getItem(key) ?? 'null') ?? fallback;
     } catch {
       return fallback;
     }
   }
 
-  const storedProfile = readStorage(PROFILE_KEY, {});
-  let profile = { ...emptyProfile, ...(storedProfile && typeof storedProfile === 'object' ? storedProfile : {}) };
-  let savedJobs = readStorage(JOBS_KEY, []);
-  let jobs = Array.isArray(savedJobs) ? savedJobs : [];
-  let view = 'dashboard';
-  let jobFilter = 'all';
+  const storedProfile = readStorage<Partial<Profile>>(PROFILE_KEY, {});
+  let profile: Profile = { ...emptyProfile, ...storedProfile };
+  let jobs = readStorage<Job[]>(JOBS_KEY, []);
+  let view: 'dashboard' | 'profile' | 'jobs' | 'settings' = 'dashboard';
+  let jobFilter: 'all' | JobStatus = 'all';
   let profileStatus = '';
-  let activeJobId = null;
-  let letterDialog;
-  let letterResultField;
+  let activeJobId: string | null = null;
+  let letterDialog: HTMLDialogElement;
+  let letterResultField: HTMLTextAreaElement;
   let letterDescription = '';
-  let letterProvider = 'openai';
+  let letterProvider: Provider = 'openai';
   let letterResult = '';
   let letterStatus = '';
   let generatingLetter = false;
   let settingsStorageWarning = false;
   let settingsStorageMessage = 'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again. Server environment keys can still be used.';
-  let providerSettings = {
+  let providerSettings: Record<Provider, ProviderState> = {
     openai: { configured: false, source: 'none' },
     gemini: { configured: false, source: 'none' },
     anthropic: { configured: false, source: 'none' },
   };
-  let providerStatuses = { openai: '', gemini: '', anthropic: '' };
-  let providerKeys = { openai: '', gemini: '', anthropic: '' };
-  let providerBusy = { openai: false, gemini: false, anthropic: false };
+  let providerStatuses: Record<Provider, string> = { openai: '', gemini: '', anthropic: '' };
+  let providerKeys: Record<Provider, string> = { openai: '', gemini: '', anthropic: '' };
+  let providerBusy: Record<Provider, boolean> = { openai: false, gemini: false, anthropic: false };
 
   $: inProgressCount = jobs.filter((job) => ['Applying', 'Applied', 'Interviewing'].includes(job.status)).length;
   $: visibleJobs = jobs.filter((job) => jobFilter === 'all' || job.status === jobFilter);
@@ -63,13 +88,13 @@
     localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
   }
 
-  function setView(nextView) {
+  function setView(nextView: typeof view) {
     view = nextView;
     if (nextView === 'settings') refreshProviderSettings();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function updateSearchLink(site) {
+  function updateSearchLink(site: 'linkedin' | 'indeed' | 'google') {
     const role = profile.roles || '';
     const location = profile.location || '';
     const query = [role, location].filter(Boolean).join(' ');
@@ -86,11 +111,11 @@
       : 'https://www.google.com/search?ibp=htl%3Bjobs';
   }
 
-  function statusClass(status) {
+  function statusClass(status: JobStatus) {
     return `status-${(status || 'Saved').toLowerCase()}`;
   }
 
-  async function refreshProviderSettings() {
+  async function refreshProviderSettings(): Promise<void> {
     try {
       const response = await fetch('/api/settings');
       const data = await response.json();
@@ -98,23 +123,27 @@
       settingsStorageWarning = Boolean(data.storageError);
       for (const provider of providers) {
         const state = data.providers?.[provider];
-        if (state) providerSettings = { ...providerSettings, [provider]: state };
+        if (state) providerSettings = { ...providerSettings, [provider]: state as ProviderState };
       }
     } catch {
       settingsStorageWarning = true;
       settingsStorageMessage = 'Could not load API key settings. Check the server and private data files.';
-      providerStatuses = Object.fromEntries(providers.map((provider) => [provider, 'Could not load key status.']));
+      providerStatuses = {
+        openai: 'Could not load key status.',
+        gemini: 'Could not load key status.',
+        anthropic: 'Could not load key status.',
+      };
     }
   }
 
-  function settingsResponseError(response, data) {
+  function settingsResponseError(response: Response, data: { error?: string }): string {
     if (response.status === 403) {
       return `For security, manage API keys from localhost. Open http://127.0.0.1:${location.port || '3000'} in this browser.`;
     }
     return data.error || 'Could not update this API key.';
   }
 
-  async function saveProviderKey(provider, event) {
+  async function saveProviderKey(provider: Provider, event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!providerKeys[provider].trim()) {
       providerStatuses = { ...providerStatuses, [provider]: 'Enter an API key first.' };
@@ -134,13 +163,16 @@
       providerStatuses = { ...providerStatuses, [provider]: 'Saved securely. The key is not shown again.' };
       await refreshProviderSettings();
     } catch (error) {
-      providerStatuses = { ...providerStatuses, [provider]: error.message || 'Could not save this key.' };
+      providerStatuses = {
+        ...providerStatuses,
+        [provider]: errorMessage(error, 'Could not save this key.'),
+      };
     } finally {
       providerBusy = { ...providerBusy, [provider]: false };
     }
   }
 
-  async function removeProviderKey(provider) {
+  async function removeProviderKey(provider: Provider): Promise<void> {
     providerBusy = { ...providerBusy, [provider]: true };
     providerStatuses = { ...providerStatuses, [provider]: 'Removing saved key…' };
     try {
@@ -157,24 +189,32 @@
       };
       await refreshProviderSettings();
     } catch (error) {
-      providerStatuses = { ...providerStatuses, [provider]: error.message || 'Could not remove this key.' };
+      providerStatuses = {
+        ...providerStatuses,
+        [provider]: errorMessage(error, 'Could not remove this key.'),
+      };
     } finally {
       providerBusy = { ...providerBusy, [provider]: false };
     }
   }
 
-  function saveProfile(event) {
+  function saveProfile(event: SubmitEvent): void {
     event.preventDefault();
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
     profileStatus = 'Saved — your search is taking shape.';
   }
 
-  async function handleResumeFile(event) {
-    const [file] = event.currentTarget.files;
+  function errorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error && error.message ? error.message : fallback;
+  }
+
+  async function handleResumeFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const [file] = input.files ?? [];
     if (!file) return;
     if (file.size > 2_000_000) {
       profileStatus = 'That file is over 2 MB. Please paste a shorter resume instead.';
-      event.currentTarget.value = '';
+      input.value = '';
       return;
     }
     try {
@@ -186,7 +226,7 @@
     }
   }
 
-  function limitProfileSource(value) {
+  function limitProfileSource(value: string): string {
     const encoder = new TextEncoder();
     const characters = Array.from(value.trim());
     let content = '';
@@ -201,7 +241,7 @@
     return content;
   }
 
-  function makeAutofillRequest(provider, source, value) {
+  function makeAutofillRequest(provider: Provider, source: 'resume' | 'linkedin', value: string): { body: string; shortened: boolean } {
     const original = value.trim();
     const payload = { provider, source, content: limitProfileSource(original) };
     const encoder = new TextEncoder();
@@ -230,20 +270,21 @@
     return { body, shortened };
   }
 
-  async function autofillProfile(source, content) {
+  async function autofillProfile(source: 'resume' | 'linkedin', content: string): Promise<void> {
     if (!content.trim()) {
       profileStatus = source === 'resume' ? 'Upload or paste your resume text first.' : 'Paste LinkedIn profile text first.';
       return;
     }
-    const { body, shortened } = makeAutofillRequest(
-      document.querySelector('#profile-ai-provider').value,
-      source,
-      content,
-    );
+    const providerSelect = document.querySelector<HTMLSelectElement>('#profile-ai-provider');
+    if (!providerSelect) return;
+    const { body, shortened } = makeAutofillRequest(providerSelect.value as Provider, source, content);
     profileStatus = shortened
       ? 'Extracting details from the first part of your text…'
       : 'Extracting profile details…';
-    const button = document.querySelector(source === 'resume' ? '#autofill-resume' : '#autofill-linkedin');
+    const button = document.querySelector<HTMLButtonElement>(
+      source === 'resume' ? '#autofill-resume' : '#autofill-linkedin',
+    );
+    if (!button) return;
     button.disabled = true;
     try {
       const response = await fetch('/api/extract-profile', {
@@ -254,8 +295,17 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not extract profile details.');
       let filled = 0;
-      for (const [name, value] of Object.entries(data.profile || {})) {
-        if (!(name in profile) || typeof value !== 'string' || !value.trim()) continue;
+      for (const [name, value] of Object.entries(data.profile || {}) as [string, unknown][]) {
+        if (
+          !['name', 'roles', 'location', 'workStyle', 'skills', 'priorities', 'experience'].includes(
+            name,
+          ) ||
+          typeof value !== 'string' ||
+          !value.trim()
+        ) {
+          continue;
+        }
+        const field = name as AutofillProfileField;
         if (name === 'workStyle') {
           if (profile.workStyle) continue;
           const option = ['Remote', 'Hybrid', 'On-site', 'Flexible']
@@ -263,8 +313,8 @@
           if (!option) continue;
           profile.workStyle = option;
         } else {
-          if (profile[name]?.trim()) continue;
-          profile[name] = value;
+          if (profile[field].trim()) continue;
+          profile[field] = value;
         }
         filled += 1;
       }
@@ -273,13 +323,18 @@
         ? `${filled} profile field${filled === 1 ? '' : 's'} filled. Review them, then save your profile. Existing entries were left unchanged.${shortened ? ' Only part of the source text was used.' : ''}`
         : `No new fields were added. Existing entries were left unchanged, and unsupported values may need manual entry.${shortened ? ' Only part of the source text was used.' : ''}`;
     } catch (error) {
-      profileStatus = error.message || 'Could not connect to the AI service.';
+      profileStatus = errorMessage(error, 'Could not connect to the AI service.');
     } finally {
       button.disabled = false;
     }
   }
 
-  function linkFor(url) {
+  async function autofillLinkedInText(): Promise<void> {
+    const textarea = document.querySelector<HTMLTextAreaElement>('#linkedin-profile-text');
+    if (textarea) await autofillProfile('linkedin', textarea.value);
+  }
+
+  function linkFor(url: string): string {
     try {
       const parsed = new URL(url);
       return ['https:', 'http:'].includes(parsed.protocol) ? parsed.href : '';
@@ -288,12 +343,17 @@
     }
   }
 
-  function saveJob(event) {
+  function saveJob(event: SubmitEvent): void {
     event.preventDefault();
-    const form = event.currentTarget;
-    const data = Object.fromEntries(new FormData(form).entries());
-    const safeUrl = linkFor(data.url);
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
+    const title = String(formData.get('title') ?? '').trim();
+    const company = String(formData.get('company') ?? '').trim();
+    const safeUrl = linkFor(String(formData.get('url') ?? ''));
+    const description = String(formData.get('description') ?? '').trim();
+    const notes = String(formData.get('notes') ?? '').trim();
     const urlInput = form.elements.namedItem('url');
+    if (!(urlInput instanceof HTMLInputElement)) return;
     if (!safeUrl) {
       urlInput.setCustomValidity('Enter a valid http or https URL.');
       urlInput.reportValidity();
@@ -302,11 +362,11 @@
     urlInput.setCustomValidity('');
     jobs = [{
       id: crypto.randomUUID(),
-      title: data.title.trim(),
-      company: data.company.trim(),
+      title,
+      company,
       url: safeUrl,
-      description: data.description.trim(),
-      notes: data.notes.trim(),
+      description,
+      notes,
       status: 'Saved',
       addedAt: new Date().toISOString(),
     }, ...jobs];
@@ -315,17 +375,17 @@
     persistJobs();
   }
 
-  function updateJobStatus(job, event) {
-    jobs = jobs.map((entry) => entry.id === job.id ? { ...entry, status: event.currentTarget.value } : entry);
+  function updateJobStatus(job: Job, event: Event): void {
+    jobs = jobs.map((entry) => entry.id === job.id ? { ...entry, status: (event.currentTarget as HTMLSelectElement).value as JobStatus } : entry);
     persistJobs();
   }
 
-  function removeJob(jobId) {
+  function removeJob(jobId: string): void {
     jobs = jobs.filter((job) => job.id !== jobId);
     persistJobs();
   }
 
-  function openLetter(job) {
+  function openLetter(job: Job): void {
     activeJobId = job.id;
     letterDescription = job.description || '';
     letterStatus = '';
@@ -333,11 +393,11 @@
     letterDialog.showModal();
   }
 
-  function limitText(value, maxLength) {
+  function limitText(value: string, maxLength: number): string {
     return typeof value === 'string' ? value.slice(0, maxLength) : '';
   }
 
-  async function generateLetter() {
+  async function generateLetter(): Promise<void> {
     const job = jobs.find((entry) => entry.id === activeJobId);
     if (!job) return;
     const description = letterDescription.trim();
@@ -365,7 +425,7 @@
         job: { title: job.title, company: job.company, description },
       };
       const encoder = new TextEncoder();
-      const fieldsToShorten = [
+      const fieldsToShorten: [Record<string, string>, string][] = [
         [payload.profile, 'resume'],
         [payload.job, 'description'],
         [payload.profile, 'experience'],
@@ -375,7 +435,7 @@
       let body = JSON.stringify(payload);
       for (const [object, field] of fieldsToShorten) {
         if (encoder.encode(body).byteLength <= 45_000) break;
-        const original = object[field];
+        const original = object[field] ?? '';
         let lower = 0;
         let upper = original.length;
         let best = '';
@@ -406,13 +466,13 @@
       letterResult = data.letter;
       letterStatus = 'Draft ready — personalize and verify it before sending.';
     } catch (error) {
-      letterStatus = error.message || 'Could not connect to the AI service.';
+      letterStatus = errorMessage(error, 'Could not connect to the AI service.');
     } finally {
       generatingLetter = false;
     }
   }
 
-  async function copyLetter() {
+  async function copyLetter(): Promise<void> {
     if (!letterResult) return;
     try {
       await navigator.clipboard.writeText(letterResult);
@@ -424,7 +484,7 @@
     }
   }
 
-  function downloadLetter() {
+  function downloadLetter(): void {
     if (!letterResult) return;
     const job = jobs.find((entry) => entry.id === activeJobId);
     const blob = new Blob([letterResult], { type: 'text/plain;charset=utf-8' });
@@ -584,7 +644,7 @@
             <div class="form-section linkedin-import-section">
               <div class="form-section-heading"><span class="step-number">03</span><div><h2>Or bring in LinkedIn details</h2><p>For privacy and access reasons, the app can’t read a LinkedIn profile from its URL. Paste profile text you choose to share.</p></div></div>
               <label class="field"><span>Copied LinkedIn profile text</span><textarea id="linkedin-profile-text" rows="7" placeholder="Open your LinkedIn profile, copy the relevant text, and paste it here."></textarea></label>
-              <div class="autofill-controls"><span class="field-hint">Only this pasted text is sent when you choose autofill.</span><button class="button button-dark" id="autofill-linkedin" type="button" onclick={() => autofillProfile('linkedin', document.querySelector('#linkedin-profile-text').value)}>Autofill from LinkedIn text <span aria-hidden="true">✳</span></button></div>
+              <div class="autofill-controls"><span class="field-hint">Only this pasted text is sent when you choose autofill.</span><button class="button button-dark" id="autofill-linkedin" type="button" onclick={autofillLinkedInText}>Autofill from LinkedIn text <span aria-hidden="true">✳</span></button></div>
             </div>
             <div class="form-actions"><span id="profile-status" class="status-message" role="status">{profileStatus}</span><button class="button button-dark" type="submit">Save my profile <span aria-hidden="true">→</span></button></div>
           </form>
@@ -627,7 +687,7 @@
                         <div><h3>{job.title}</h3><p>{job.company}</p></div>
                       </div>
                       <select class={`status-select ${statusClass(job.status)}`} aria-label={`Application status for ${job.title} at ${job.company}`} value={job.status} onchange={(event) => updateJobStatus(job, event)}>
-                        {#each statuses as status}<option value={status}>{status}</option>{/each}
+                        {#each statuses as status (status)}<option value={status}>{status}</option>{/each}
                       </select>
                     </div>
                     {#if job.notes}<p class="job-notes">{job.notes}</p>{/if}
@@ -658,7 +718,7 @@
             <div class="form-note settings-note settings-error" id="settings-storage-warning" role="alert"><span aria-hidden="true">!</span><div><strong>Saved key storage needs attention.</strong> <span id="settings-storage-message">{settingsStorageMessage}</span></div></div>
           {/if}
           <div class="settings-provider-list">
-            {#each providers as provider}
+            {#each providers as provider (provider)}
               <article class="panel provider-card" data-provider-card={provider}>
                 <div class="provider-heading"><div class:gemini-symbol={provider === 'gemini'} class="provider-symbol">{provider === 'openai' ? 'O' : provider === 'gemini' ? 'G' : 'A'}</div><div><h2>{providerNames[provider]}</h2><p class="provider-state" id={`provider-state-${provider}`}>{providerStatuses[provider] || (
                   providerSettings[provider].source === 'saved'
