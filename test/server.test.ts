@@ -112,7 +112,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
   const secret = 'sk-test-private-provider-key';
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-fallback-key';
+  delete process.env.OPENAI_API_KEY;
   let providerAuthorization: string | null = null;
   mockFetch(async (_url, options) => {
     providerAuthorization = options.headers.get('authorization');
@@ -132,6 +132,13 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
     });
     assert.equal(saveResponse.status, 200);
     assert.deepEqual(await responseJson(saveResponse), { saved: true, provider: 'openai' });
+
+    const duplicateResponse = await originalFetch(`${baseUrl}/api/settings/provider-key`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: baseUrl },
+      body: JSON.stringify({ provider: 'openai', key: 'sk-second-key' }),
+    });
+    assert.equal(duplicateResponse.status, 409);
 
     const encryptedPath = path.join(dataDirectory, 'provider-keys.enc');
     const encryptedContent = await fs.readFile(encryptedPath, 'utf8');
@@ -162,6 +169,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
     assert.equal(letterResponse.status, 200);
     assert.equal(providerAuthorization, ['Bearer', secret].join(' '));
 
+    process.env.OPENAI_API_KEY = 'environment-fallback-key';
     const removeResponse = await originalFetch(
       `${baseUrl}/api/settings/provider-key?provider=openai`,
       {
@@ -304,6 +312,7 @@ test('falls back to environment keys and reports recovery guidance when encrypte
     assert.equal(settings.storageError, true);
     assert.deepEqual(settings.providers.openai, { configured: true, source: 'environment' });
 
+    delete process.env.OPENAI_API_KEY;
     const saveResponse = await originalFetch(`${damagedUrl}/api/settings/provider-key`, {
       method: 'POST',
       headers: { origin: damagedUrl, 'content-type': 'application/json' },
@@ -692,4 +701,147 @@ test('rejects malformed JSON', async () => {
 test('blocks requests to paths outside the built frontend directory', async () => {
   const response = await fetch(`${baseUrl}/%2e%2e/server.js`);
   assert.equal(response.status, 404);
+});
+
+test('rejects saving a key when the server environment already provides one', async () => {
+  const oldKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'environment-key';
+  try {
+    const response = await fetch(`${baseUrl}/api/settings/provider-key`, {
+      method: 'POST',
+      headers: { origin: baseUrl, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic', key: 'another-key' }),
+    });
+    assert.equal(response.status, 409);
+    assert.match((await responseJson(response)).error, /ANTHROPIC_API_KEY/);
+  } finally {
+    if (oldKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = oldKey;
+  }
+});
+
+test('recruiter chat returns a reply and newly spotted skills', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-key';
+  let prompt = '';
+  mockFetch((_url, options) => {
+    const body = JSON.parse(options.body) as { messages: { content: string }[] };
+    prompt = body.messages[1]?.content ?? '';
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                reply: 'Tell me more about Kafka.',
+                skills: ['Event-driven design'],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { name: 'Sam', skills: 'C++' },
+        messages: [{ role: 'user', content: 'I built a message pipeline.' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await responseJson(response);
+    assert.equal(body.reply, 'Tell me more about Kafka.');
+    assert.deepEqual(body.skills, ['Event-driven design']);
+    assert.match(prompt, /Candidate: I built a message pipeline\./);
+
+    const invalid = await originalFetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        messages: [{ role: 'assistant', content: 'Hello' }],
+      }),
+    });
+    assert.equal(invalid.status, 400);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('finds jobs from public boards and ranks them with the provider', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-key';
+  mockFetch((url) => {
+    if (url.startsWith('https://remotive.com/')) {
+      return new Response(
+        JSON.stringify({
+          jobs: [
+            {
+              title: 'Rust Engineer',
+              company_name: 'Acme',
+              url: 'https://remotive.com/job/1',
+              candidate_required_location: 'Europe',
+              description: '<p>Build <b>services</b></p>',
+            },
+            { title: 'Bad link', company_name: 'X', url: 'javascript:alert(1)', description: '' },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.startsWith('https://www.arbeitnow.com/')) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                matches: [
+                  { id: 0, score: 88, reason: 'Rust experience' },
+                  { id: 9, score: 99, reason: 'Unknown id' },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/find-jobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', profile: { roles: 'Rust Engineer' } }),
+    });
+    assert.equal(response.status, 200);
+    const body = await responseJson(response);
+    assert.deepEqual(body.jobs, [
+      {
+        title: 'Rust Engineer',
+        company: 'Acme',
+        location: 'Europe',
+        url: 'https://remotive.com/job/1',
+        description: 'Build services',
+        source: 'Remotive',
+        score: 88,
+        reason: 'Rust experience',
+      },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
 });

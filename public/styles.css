@@ -276,3 +276,14 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .dialog-actions .button { align-self: flex-end; }
   .app-footer { gap: 12px; }
 }
+
+.chat-panel { display: grid; gap: 14px; padding: 18px; }
+.chat-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.chat-log { display: grid; gap: 10px; max-height: 460px; min-height: 120px; overflow-y: auto; }
+.chat-message { padding: 11px 13px; border-radius: 9px; font-size: 12px; line-height: 1.6; }
+.chat-message p { margin: 4px 0 0; white-space: pre-wrap; }
+.chat-assistant { background: var(--mint); }
+.chat-user { background: var(--lavender); }
+.skill-suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 11px; }
+.chat-form { display: grid; gap: 10px; }
+.chat-form textarea { width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; resize: vertical; }

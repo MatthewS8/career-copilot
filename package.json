@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:server": "tsc --project tsconfig.server.json && node build/server.js",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --project tsconfig.server.json --noEmit",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
@@ -38,5 +39,8 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.1",
     "vite": "^6.4.4"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }

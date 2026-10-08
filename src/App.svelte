@@ -26,9 +26,23 @@
     resume: string;
   };
   type AutofillProfileField = Exclude<keyof Profile, 'linkedin' | 'resume'>;
+  type ChatMessage = { role: 'user' | 'assistant'; content: string };
+  type Suggestion = {
+    id: string;
+    title: string;
+    company: string;
+    location: string;
+    url: string;
+    description: string;
+    source: string;
+    score: number;
+    reason: string;
+  };
 
   const PROFILE_KEY = 'jobfinder.profile.v1';
   const JOBS_KEY = 'jobfinder.jobs.v1';
+  const CHAT_KEY = 'jobfinder.chat.v1';
+  const SUGGESTIONS_KEY = 'jobfinder.suggestions.v1';
   const statuses: JobStatus[] = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
   const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
   const providerNames = {
@@ -59,7 +73,17 @@
   const storedProfile = readStorage<Partial<Profile>>(PROFILE_KEY, {});
   let profile: Profile = { ...emptyProfile, ...storedProfile };
   let jobs = readStorage<Job[]>(JOBS_KEY, []);
-  let view: 'dashboard' | 'profile' | 'jobs' | 'settings' = 'dashboard';
+  let chatMessages = readStorage<ChatMessage[]>(CHAT_KEY, []);
+  let suggestions = readStorage<Suggestion[]>(SUGGESTIONS_KEY, []);
+  let chatInput = '';
+  let chatProvider: Provider = 'openai';
+  let chatBusy = false;
+  let chatStatus = '';
+  let discoveredSkills: string[] = [];
+  let findingJobs = false;
+  let suggestionsStatus = '';
+  let view: 'dashboard' | 'profile' | 'jobs' | 'settings' | 'recruiter' | 'suggestions' =
+    'dashboard';
   let jobFilter: 'all' | JobStatus = 'all';
   let profileStatus = '';
   let activeJobId: string | null = null;
@@ -88,7 +112,7 @@
   $: visibleJobs = jobs.filter((job) => jobFilter === 'all' || job.status === jobFilter);
 
   onMount(() => {
-    if (view === 'settings') refreshProviderSettings();
+    void refreshProviderSettings();
   });
 
   function persistJobs() {
@@ -135,6 +159,9 @@
       for (const provider of providers) {
         const state = data.providers?.[provider];
         if (state) providerSettings = { ...providerSettings, [provider]: state as ProviderState };
+      }
+      if (!providerSettings[chatProvider].configured) {
+        chatProvider = providers.find((name) => providerSettings[name].configured) ?? chatProvider;
       }
     } catch {
       settingsStorageWarning = true;
@@ -214,6 +241,124 @@
     } finally {
       providerBusy = { ...providerBusy, [provider]: false };
     }
+  }
+
+  function persistChat(): void {
+    localStorage.setItem(CHAT_KEY, JSON.stringify(chatMessages));
+  }
+
+  function persistSuggestions(): void {
+    localStorage.setItem(SUGGESTIONS_KEY, JSON.stringify(suggestions));
+  }
+
+  async function requestRecruiterReply(): Promise<void> {
+    chatBusy = true;
+    chatStatus = '';
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: chatProvider,
+          profile,
+          messages: chatMessages.slice(-30),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'The recruiter could not reply.');
+      chatMessages = [...chatMessages, { role: 'assistant', content: String(data.reply) }];
+      persistChat();
+      const known = profile.skills.toLowerCase();
+      const found = (Array.isArray(data.skills) ? (data.skills as string[]) : []).filter(
+        (skill) => !known.includes(skill.toLowerCase()),
+      );
+      discoveredSkills = [...new Set([...discoveredSkills, ...found])];
+    } catch (error) {
+      chatStatus = errorMessage(error, 'The recruiter could not reply.');
+    } finally {
+      chatBusy = false;
+    }
+  }
+
+  async function sendChatMessage(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const content = chatInput.trim();
+    if (!content || chatBusy) return;
+    chatMessages = [...chatMessages, { role: 'user', content }];
+    chatInput = '';
+    persistChat();
+    await requestRecruiterReply();
+  }
+
+  async function restartChat(): Promise<void> {
+    chatMessages = [];
+    discoveredSkills = [];
+    persistChat();
+    await requestRecruiterReply();
+  }
+
+  function addDiscoveredSkill(skill: string): void {
+    profile = {
+      ...profile,
+      skills: [profile.skills.trim(), skill].filter(Boolean).join(', '),
+    };
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    discoveredSkills = discoveredSkills.filter((entry) => entry !== skill);
+  }
+
+  async function findJobs(): Promise<void> {
+    findingJobs = true;
+    suggestionsStatus = 'Searching job boards and matching them to you…';
+    try {
+      const response = await fetch('/api/find-jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: chatProvider,
+          profile,
+          messages: chatMessages.slice(-10),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not find jobs.');
+      const known = new Set([...suggestions, ...jobs].map((entry) => entry.url));
+      const fresh = (data.jobs as Omit<Suggestion, 'id'>[])
+        .filter((job) => !known.has(job.url))
+        .map((job) => ({ ...job, id: crypto.randomUUID() }));
+      suggestions = [...fresh, ...suggestions];
+      persistSuggestions();
+      suggestionsStatus = fresh.length
+        ? `Found ${fresh.length} new ${fresh.length === 1 ? 'match' : 'matches'}.`
+        : 'No new matches right now. Try again later or refine your profile.';
+      if (fresh.length) setView('suggestions');
+    } catch (error) {
+      suggestionsStatus = errorMessage(error, 'Could not find jobs.');
+    } finally {
+      findingJobs = false;
+    }
+  }
+
+  function saveSuggestion(suggestion: Suggestion): void {
+    jobs = [
+      {
+        id: crypto.randomUUID(),
+        title: suggestion.title,
+        company: suggestion.company,
+        url: suggestion.url,
+        description: suggestion.description,
+        notes: suggestion.reason,
+        status: 'Saved',
+        addedAt: new Date().toISOString(),
+      },
+      ...jobs,
+    ];
+    persistJobs();
+    dismissSuggestion(suggestion.id);
+  }
+
+  function dismissSuggestion(id: string): void {
+    suggestions = suggestions.filter((entry) => entry.id !== id);
+    persistSuggestions();
   }
 
   function saveProfile(event: SubmitEvent): void {
@@ -568,6 +713,25 @@
       </button>
       <button
         class="nav-item"
+        class:is-active={view === 'recruiter'}
+        type="button"
+        data-view="recruiter"
+        onclick={() => setView('recruiter')}
+      >
+        <span class="nav-icon" aria-hidden="true">✎</span> AI recruiter
+      </button>
+      <button
+        class="nav-item"
+        class:is-active={view === 'suggestions'}
+        type="button"
+        data-view="suggestions"
+        onclick={() => setView('suggestions')}
+      >
+        <span class="nav-icon" aria-hidden="true">★</span> Recommended
+        <span class="nav-count">{suggestions.length}</span>
+      </button>
+      <button
+        class="nav-item"
         class:is-active={view === 'jobs'}
         type="button"
         data-view="jobs"
@@ -604,6 +768,8 @@
           >{{
             dashboard: 'Overview',
             profile: 'My profile',
+            recruiter: 'AI recruiter',
+            suggestions: 'Recommended jobs',
             jobs: 'Saved jobs',
             settings: 'API settings',
           }[view]}</strong
@@ -1068,6 +1234,168 @@
         </section>
       {/if}
 
+      {#if view === 'recruiter'}
+        <section class="view" id="view-recruiter">
+          <div class="inner-heading">
+            <p class="eyebrow">YOUR AI RECRUITER</p>
+            <h1>Tell your story, <em>get found.</em></h1>
+            <p class="heading-copy">
+              The recruiter reviews your profile, asks about your experience in detail and points
+              out skills you may have overlooked. Your profile and messages are sent to the provider
+              you choose.
+            </p>
+          </div>
+          <article class="panel chat-panel">
+            <div class="chat-toolbar">
+              <label class="field"
+                ><span>AI provider</span><select bind:value={chatProvider}
+                  >{#each providers as provider (provider)}<option value={provider}
+                      >{providerNames[provider]}{providerSettings[provider].configured
+                        ? ''
+                        : ' (no key)'}</option
+                    >{/each}</select
+                ></label
+              >
+              <button
+                class="button button-dark"
+                type="button"
+                disabled={chatBusy || !providerSettings[chatProvider].configured}
+                onclick={restartChat}
+                >{chatMessages.length ? 'Restart interview' : 'Start interview'}</button
+              >
+              <button
+                class="button button-dark"
+                type="button"
+                disabled={findingJobs || !providerSettings[chatProvider].configured}
+                onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find jobs for me'}</button
+              >
+            </div>
+            {#if !providerSettings[chatProvider].configured}
+              <p class="status-message" role="status">
+                Add an API key for this provider in API settings first.
+              </p>
+            {/if}
+            <div class="chat-log" aria-live="polite">
+              {#each chatMessages as message, index (index)}
+                <div class={`chat-message chat-${message.role}`}>
+                  <strong>{message.role === 'user' ? 'You' : 'Recruiter'}</strong>
+                  <p>{message.content}</p>
+                </div>
+              {/each}
+              {#if chatBusy}<p class="status-message">The recruiter is typing…</p>{/if}
+            </div>
+            {#if discoveredSkills.length}
+              <div class="skill-suggestions">
+                <strong>Skills the recruiter spotted — add to your profile?</strong>
+                {#each discoveredSkills as skill (skill)}
+                  <button
+                    class="job-action-link"
+                    type="button"
+                    onclick={() => addDiscoveredSkill(skill)}>+ {skill}</button
+                  >
+                {/each}
+              </div>
+            {/if}
+            <form class="chat-form" onsubmit={sendChatMessage}>
+              <label class="sr-only" for="chat-input">Your message</label>
+              <textarea
+                id="chat-input"
+                rows="3"
+                maxlength="3000"
+                placeholder="Describe a project you worked on, your role and the tools you used…"
+                bind:value={chatInput}
+              ></textarea>
+              <div class="provider-actions">
+                <span class="status-message" role="status">{chatStatus || suggestionsStatus}</span>
+                {#if chatStatus && chatMessages[chatMessages.length - 1]?.role === 'user'}
+                  <button
+                    class="text-button"
+                    type="button"
+                    disabled={chatBusy}
+                    onclick={requestRecruiterReply}>Try again</button
+                  >
+                {/if}
+                <button
+                  class="button button-dark"
+                  type="submit"
+                  disabled={chatBusy ||
+                    !chatMessages.length ||
+                    !providerSettings[chatProvider].configured}>Send</button
+                >
+              </div>
+            </form>
+          </article>
+        </section>
+      {/if}
+
+      {#if view === 'suggestions'}
+        <section class="view" id="view-suggestions">
+          <div class="inner-heading">
+            <p class="eyebrow">HANDPICKED FOR YOU</p>
+            <h1>Recommended <em>jobs.</em></h1>
+            <p class="heading-copy">
+              Postings found on public job boards and ranked against your profile. Review them, save
+              the ones you like, and apply later.
+            </p>
+          </div>
+          <div class="provider-actions">
+            <span class="status-message" role="status">{suggestionsStatus}</span>
+            <button
+              class="button button-dark"
+              type="button"
+              disabled={findingJobs || !providerSettings[chatProvider].configured}
+              onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find more jobs'}</button
+            >
+          </div>
+          <div class="job-list">
+            {#if suggestions.length === 0}
+              <div class="empty-state">
+                <span class="empty-mark">✳</span>
+                <h3>No recommendations yet.</h3>
+                <p>Ask the AI recruiter to find jobs for you.</p>
+              </div>
+            {/if}
+            {#each suggestions as suggestion (suggestion.id)}
+              <article class="job-card">
+                <div class="job-card-top">
+                  <div class="job-company">
+                    <span class="company-mark"
+                      >{(suggestion.company || '?').trim().slice(0, 1).toUpperCase()}</span
+                    >
+                    <div>
+                      <h3>{suggestion.title}</h3>
+                      <p>{suggestion.company} · {suggestion.location} · {suggestion.source}</p>
+                    </div>
+                  </div>
+                  <span class="nav-count">{suggestion.score}% match</span>
+                </div>
+                {#if suggestion.reason}<p class="job-notes">{suggestion.reason}</p>{/if}
+                <div class="job-card-footer">
+                  {#if linkFor(suggestion.url)}
+                    <a
+                      class="job-action-link"
+                      href={linkFor(suggestion.url)}
+                      target="_blank"
+                      rel="noopener noreferrer">View listing ↗</a
+                    >
+                  {/if}
+                  <button
+                    class="job-action-link"
+                    type="button"
+                    onclick={() => saveSuggestion(suggestion)}>Save to my jobs</button
+                  >
+                  <button
+                    class="job-remove"
+                    type="button"
+                    onclick={() => dismissSuggestion(suggestion.id)}>Dismiss</button
+                  >
+                </div>
+              </article>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       {#if view === 'settings'}
         <section class="view" id="view-settings">
           <div class="inner-heading">
@@ -1112,9 +1440,9 @@
                     <p class="provider-state" id={`provider-state-${provider}`}>
                       {providerStatuses[provider] ||
                         (providerSettings[provider].source === 'saved'
-                          ? 'A saved key is encrypted on this server.'
+                          ? 'A key is already saved for this provider. Remove it to add a different one.'
                           : providerSettings[provider].source === 'environment'
-                            ? 'Using a key from the server environment.'
+                            ? `A key is already set through ${provider.toUpperCase()}_API_KEY on the server. Change it there and restart.`
                             : providerSettings[provider].configured === false
                               ? 'No key configured.'
                               : 'Checking key status…')}
@@ -1126,31 +1454,32 @@
                   data-provider={provider}
                   onsubmit={(event) => saveProviderKey(provider, event)}
                 >
-                  <label class="field"
-                    ><span>API key</span><input
-                      type="password"
-                      name="key"
-                      maxlength="1000"
-                      autocomplete="new-password"
-                      autocapitalize="off"
-                      spellcheck="false"
-                      placeholder={`Paste your ${providerNames[provider]} API key`}
-                      bind:value={providerKeys[provider]}
-                    /></label
-                  >
+                  {#if !providerSettings[provider].configured}
+                    <label class="field"
+                      ><span>API key</span><input
+                        type="password"
+                        name="key"
+                        maxlength="1000"
+                        autocomplete="new-password"
+                        autocapitalize="off"
+                        spellcheck="false"
+                        placeholder={`Paste your ${providerNames[provider]} API key`}
+                        bind:value={providerKeys[provider]}
+                      /></label
+                    >
+                  {/if}
                   <div class="provider-actions">
                     <span class="status-message" role="status">{providerStatuses[provider]}</span
-                    ><button
-                      class="button button-dark"
-                      type="submit"
-                      disabled={providerBusy[provider]}>Save key</button
-                    ><button
-                      class="text-button remove-provider-key"
-                      type="button"
-                      hidden={providerSettings[provider].source !== 'saved'}
-                      disabled={providerBusy[provider]}
-                      onclick={() => removeProviderKey(provider)}>Remove saved key</button
-                    >
+                    >{#if !providerSettings[provider].configured}<button
+                        class="button button-dark"
+                        type="submit"
+                        disabled={providerBusy[provider]}>Save key</button
+                      >{/if}{#if providerSettings[provider].source === 'saved'}<button
+                        class="text-button remove-provider-key"
+                        type="button"
+                        disabled={providerBusy[provider]}
+                        onclick={() => removeProviderKey(provider)}>Remove saved key</button
+                      >{/if}
                   </div>
                 </form>
               </article>
