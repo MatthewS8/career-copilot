@@ -206,6 +206,40 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
   }
 });
 
+test('allows only one concurrent save for a provider', async () => {
+  const concurrentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-concurrent-'));
+  const concurrentServer = createServer({ dataDirectory: concurrentDirectory });
+  const oldKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  await new Promise<void>((resolve) =>
+    concurrentServer.listen({ port: 0, host: '127.0.0.1' }, resolve),
+  );
+  const concurrentUrl = `http://127.0.0.1:${serverPort(concurrentServer).toString()}`;
+  try {
+    const responses = await Promise.all(
+      ['first-concurrent-key', 'second-concurrent-key'].map((key) =>
+        fetch(`${concurrentUrl}/api/settings/provider-key`, {
+          method: 'POST',
+          headers: { origin: concurrentUrl, 'content-type': 'application/json' },
+          body: JSON.stringify({ provider: 'openai', key }),
+        }),
+      ),
+    );
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+    const conflict = responses.find((response) => response.status === 409);
+    assert.ok(conflict);
+    assert.match((await responseJson(conflict)).error, /already saved/);
+
+    const status = await responseJson(await fetch(`${concurrentUrl}/api/settings`));
+    assert.deepEqual(status.providers.openai, { configured: true, source: 'saved' });
+  } finally {
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+    await new Promise((resolve) => concurrentServer.close(resolve));
+    await fs.rm(concurrentDirectory, { recursive: true, force: true });
+  }
+});
+
 test('rejects cross-origin API key changes', async () => {
   const missingOrigin = await fetch(`${baseUrl}/api/settings/provider-key?provider=openai`, {
     method: 'DELETE',
@@ -780,8 +814,10 @@ test('finds jobs from public boards and ranks them with the provider', async () 
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
   process.env.OPENAI_API_KEY = 'environment-key';
+  const remotiveRequests: string[] = [];
   mockFetch((url) => {
     if (url.startsWith('https://remotive.com/')) {
+      remotiveRequests.push(url);
       return new Response(
         JSON.stringify({
           jobs: [
@@ -791,8 +827,15 @@ test('finds jobs from public boards and ranks them with the provider', async () 
               url: 'https://remotive.com/job/1',
               candidate_required_location: 'Europe',
               description: '<p>Build <b>services</b></p>',
+              publication_date: '2026-10-01T12:00:00Z',
             },
             { title: 'Bad link', company_name: 'X', url: 'javascript:alert(1)', description: '' },
+            {
+              title: 'Untrusted host',
+              company_name: 'X',
+              url: 'https://example.com/job/3',
+              description: 'Build services',
+            },
           ],
         }),
         { status: 200 },
@@ -827,6 +870,7 @@ test('finds jobs from public boards and ranks them with the provider', async () 
     });
     assert.equal(response.status, 200);
     const body = await responseJson(response);
+    assert.equal(remotiveRequests.length, 1);
     assert.deepEqual(body.jobs, [
       {
         title: 'Rust Engineer',
@@ -835,10 +879,144 @@ test('finds jobs from public boards and ranks them with the provider', async () 
         url: 'https://remotive.com/job/1',
         description: 'Build services',
         source: 'Remotive',
+        postedAt: '2026-10-01T12:00:00.000Z',
         score: 88,
         reason: 'Rust experience',
       },
     ]);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('keeps matching resilient to partial failures and malformed or unsafe job results', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-key';
+  let providerPrompt = '';
+  let providerInstructions = '';
+  mockFetch((url, options) => {
+    if (url.startsWith('https://remotive.com/')) {
+      return new Response('unavailable', { status: 503 });
+    }
+    if (url.startsWith('https://www.arbeitnow.com/')) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              title: 'Rust Engineer',
+              company_name: 'Acme',
+              url: 'https://www.arbeitnow.com/jobs/1',
+              remote: false,
+              description: 'Build Rust systems',
+              date: 1_791_230_400,
+            },
+            {
+              title: 'Duplicate',
+              company_name: 'Acme',
+              url: 'https://www.arbeitnow.com/jobs/1',
+              description: 'Build Rust systems',
+            },
+            {
+              title: 'Unsafe link',
+              company_name: 'Acme',
+              url: 'https://attacker.example/jobs/3',
+              description: 'Build Rust systems',
+            },
+            { title: '', company_name: 'Missing title', url: 'https://www.arbeitnow.com/jobs/4' },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    const parsed: unknown = JSON.parse(options.body);
+    assert.ok(parsed && typeof parsed === 'object' && 'messages' in parsed);
+    assert.ok(Array.isArray(parsed.messages));
+    const messages: unknown[] = parsed.messages;
+    const secondMessage = messages[1];
+    assert.ok(
+      secondMessage &&
+        typeof secondMessage === 'object' &&
+        'content' in secondMessage &&
+        typeof secondMessage.content === 'string',
+    );
+    const firstMessage = messages[0];
+    assert.ok(
+      firstMessage &&
+        typeof firstMessage === 'object' &&
+        'content' in firstMessage &&
+        typeof firstMessage.content === 'string',
+    );
+    providerInstructions = firstMessage.content;
+    providerPrompt = secondMessage.content;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                matches: [{ id: 0, score: 76, reason: 'Relevant skills and remote location.' }],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/find-jobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { roles: 'Rust Engineer', location: 'Toronto', workStyle: 'Remote' },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await responseJson(response);
+    assert.deepEqual(body.jobs, [
+      {
+        title: 'Rust Engineer',
+        company: 'Acme',
+        location: 'Location not specified',
+        url: 'https://www.arbeitnow.com/jobs/1',
+        description: 'Build Rust systems',
+        source: 'Arbeitnow',
+        postedAt: '2026-10-05T20:00:00.000Z',
+        score: 76,
+        reason: 'Relevant skills and remote location.',
+      },
+    ]);
+    assert.match(providerInstructions, /location and work style as real constraints/);
+    assert.match(providerPrompt, /Toronto; Remote/);
+    assert.match(providerPrompt, /Location not specified/);
+
+    mockFetch((url) => {
+      if (url.startsWith('https://remotive.com/'))
+        return new Response(JSON.stringify({ jobs: { invalid: true } }), { status: 200 });
+      if (url.startsWith('https://www.arbeitnow.com/'))
+        return new Response(JSON.stringify({ data: 'invalid' }), { status: 200 });
+      throw new Error('The provider must not be called when sources contain no usable jobs.');
+    });
+    const emptyResponse = await originalFetch(`${baseUrl}/api/find-jobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', profile: { roles: 'Rust Engineer' } }),
+    });
+    assert.equal(emptyResponse.status, 200);
+    assert.deepEqual((await responseJson(emptyResponse)).jobs, []);
+
+    mockFetch(() => new Response('unavailable', { status: 503 }));
+    const failedResponse = await originalFetch(`${baseUrl}/api/find-jobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', profile: { roles: 'Rust Engineer' } }),
+    });
+    assert.equal(failedResponse.status, 502);
+    assert.deepEqual((await responseJson(failedResponse)).jobs, []);
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;

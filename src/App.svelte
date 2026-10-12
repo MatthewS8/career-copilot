@@ -35,6 +35,7 @@
     url: string;
     description: string;
     source: string;
+    postedAt?: string;
     score: number;
     reason: string;
   };
@@ -1365,6 +1366,9 @@
                     <div>
                       <h3>{suggestion.title}</h3>
                       <p>{suggestion.company} · {suggestion.location} · {suggestion.source}</p>
+                      {#if suggestion.postedAt}
+                        <p>Posted {new Date(suggestion.postedAt).toLocaleDateString()}</p>
+                      {/if}
                     </div>
                   </div>
                   <span class="nav-count">{suggestion.score}% match</span>
