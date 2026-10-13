@@ -282,6 +282,23 @@
     localStorage.setItem(CHAT_KEY, JSON.stringify(chatMessages));
   }
 
+  function clearRecruiterConversation(): void {
+    if (
+      !window.confirm(
+        'Clear this recruiter conversation and its unadded suggestions from this browser? This cannot remove information already sent to an AI provider.',
+      )
+    ) {
+      return;
+    }
+    chatMessages = [];
+    discoveredSkills = [];
+    alertSuggestions = [];
+    chatInput = '';
+    chatStatus = 'Conversation cleared from this browser.';
+    localStorage.removeItem(CHAT_KEY);
+    localStorage.removeItem('jobfinder.linkedin-alert-suggestions.v1');
+  }
+
   function persistSuggestions(): void {
     localStorage.setItem(SUGGESTIONS_KEY, JSON.stringify(suggestions));
   }
@@ -337,9 +354,19 @@
   }
 
   async function restartChat(): Promise<void> {
+    if (
+      chatMessages.length &&
+      !window.confirm(
+        'Start a new recruiter interview? This clears the current conversation from this browser.',
+      )
+    ) {
+      return;
+    }
     chatMessages = [];
     discoveredSkills = [];
+    alertSuggestions = [];
     persistChat();
+    localStorage.removeItem('jobfinder.linkedin-alert-suggestions.v1');
     await requestRecruiterReply();
   }
 
@@ -350,6 +377,17 @@
     };
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
     discoveredSkills = discoveredSkills.filter((entry) => entry !== skill);
+  }
+
+  function dismissDiscoveredSkill(skill: string): void {
+    discoveredSkills = discoveredSkills.filter((entry) => entry !== skill);
+  }
+
+  function changeChatProvider(event: Event): void {
+    chatProvider = (event.currentTarget as HTMLSelectElement).value as Provider;
+    chatStatus = chatMessages.length
+      ? `Next reply will send your profile and the latest conversation messages to ${providerNames[chatProvider]}.`
+      : '';
   }
 
   async function findJobs(): Promise<void> {
@@ -1515,14 +1553,26 @@
             <h1>Tell your story, <em>get found.</em></h1>
             <p class="heading-copy">
               The recruiter reviews your profile, asks about your experience in detail and points
-              out skills you may have overlooked. Your profile and messages are sent to the provider
-              you choose.
+              out skills you may have overlooked.
             </p>
+          </div>
+          <div class="form-note recruiter-data-note">
+            <span aria-hidden="true">✳</span>
+            <div>
+              <strong>What is shared when you send a message.</strong> Your current profile (including
+              any resume text) and up to the latest 30 recruiter messages are sent to the selected
+              provider to generate a reply. They remain in this browser until you clear them; the
+              provider handles submitted content under its own data policy. Skills are not added to
+              your profile unless you choose to add them.
+            </div>
           </div>
           <article class="panel chat-panel">
             <div class="chat-toolbar">
               <label class="field"
-                ><span>AI provider</span><select bind:value={chatProvider}
+                ><span>AI provider</span><select
+                  value={chatProvider}
+                  disabled={chatBusy}
+                  onchange={changeChatProvider}
                   >{#each providers as provider (provider)}<option value={provider}
                       >{providerNames[provider]}{providerSettings[provider].configured
                         ? ''
@@ -1536,6 +1586,14 @@
                 disabled={chatBusy || !providerSettings[chatProvider].configured}
                 onclick={restartChat}
                 >{chatMessages.length ? 'Restart interview' : 'Start interview'}</button
+              >
+              <button
+                class="text-button chat-clear"
+                type="button"
+                disabled={
+                  chatBusy || (!chatMessages.length && !discoveredSkills.length && !alertSuggestions.length)
+                }
+                onclick={clearRecruiterConversation}>Clear chat</button
               >
               <button
                 class="button button-dark"
@@ -1567,7 +1625,14 @@
                     type="button"
                     onclick={() => addDiscoveredSkill(skill)}>+ {skill}</button
                   >
+                  <button
+                    class="job-remove skill-dismiss"
+                    type="button"
+                    aria-label={`Dismiss ${skill}`}
+                    onclick={() => dismissDiscoveredSkill(skill)}>Not now</button
+                  >
                 {/each}
+                <span class="field-hint">These suggestions stay unsaved until you add one.</span>
               </div>
             {/if}
             {#if alertSuggestions.length}
@@ -1598,12 +1663,12 @@
               ></textarea>
               <div class="provider-actions">
                 <span class="status-message" role="status">{chatStatus || suggestionsStatus}</span>
-                {#if chatStatus && chatMessages[chatMessages.length - 1]?.role === 'user'}
+                {#if chatStatus}
                   <button
                     class="text-button"
                     type="button"
-                    disabled={chatBusy}
-                    onclick={requestRecruiterReply}>Try again</button
+                    disabled={chatBusy || !providerSettings[chatProvider].configured}
+                    onclick={() => void requestRecruiterReply()}>Try again</button
                   >
                 {/if}
                 <button
