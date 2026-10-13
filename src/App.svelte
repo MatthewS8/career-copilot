@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
 
   type Provider = 'openai' | 'gemini' | 'anthropic';
   type ProviderState = { configured: boolean; source: 'saved' | 'environment' | 'none' };
@@ -79,7 +80,7 @@
   let jobs = readStorage<Job[]>(JOBS_KEY, []);
   let chatMessages = readStorage<ChatMessage[]>(CHAT_KEY, []);
   let suggestions = readStorage<Suggestion[]>(SUGGESTIONS_KEY, []);
-  let hiddenJobUrls = new Set(
+  let hiddenJobUrls = new SvelteSet(
     readStorage<unknown[]>(HIDDEN_JOBS_KEY, []).filter(
       (url): url is string => typeof url === 'string' && Boolean(linkFor(url)),
     ),
@@ -511,7 +512,6 @@
 
   function hideSuggestion(suggestion: Suggestion): void {
     hiddenJobUrls.add(suggestion.url);
-    hiddenJobUrls = hiddenJobUrls;
     localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify([...hiddenJobUrls]));
     dismissSuggestion(suggestion.id);
     suggestionsStatus = 'Job hidden. It will not be suggested again from the same listing.';
@@ -963,7 +963,7 @@
             whenever you are ready.
           </p>
           <div class="onboarding-steps" aria-label="Getting started progress">
-            {#each ['AI key', 'Your CV', 'Recruiter chat', 'Recommendations'] as label, index}
+            {#each ['AI key', 'Your CV', 'Recruiter chat', 'Recommendations'] as label, index (label)}
               <span class:current={onboardingStep === index} class:complete={onboardingStep > index}
                 >{index + 1}. {label}</span
               >
@@ -979,7 +979,7 @@
               </p>
               <label class="field"
                 ><span>Provider</span><select bind:value={chatProvider}
-                  >{#each providers as provider}<option value={provider}
+                  >{#each providers as provider (provider)}<option value={provider}
                       >{providerNames[provider]}</option
                     >{/each}</select
                 ></label
@@ -1560,10 +1560,10 @@
             <span aria-hidden="true">✳</span>
             <div>
               <strong>What is shared when you send a message.</strong> Your current profile (including
-              any resume text) and up to the latest 30 recruiter messages are sent to the selected
-              provider to generate a reply. They remain in this browser until you clear them; the
-              provider handles submitted content under its own data policy. Skills are not added to
-              your profile unless you choose to add them.
+              any resume text) and up to the latest 30 recruiter messages are sent to the selected provider
+              to generate a reply. They remain in this browser until you clear them; the provider handles
+              submitted content under its own data policy. Skills are not added to your profile unless
+              you choose to add them.
             </div>
           </div>
           <article class="panel chat-panel">
@@ -1590,9 +1590,8 @@
               <button
                 class="text-button chat-clear"
                 type="button"
-                disabled={
-                  chatBusy || (!chatMessages.length && !discoveredSkills.length && !alertSuggestions.length)
-                }
+                disabled={chatBusy ||
+                  (!chatMessages.length && !discoveredSkills.length && !alertSuggestions.length)}
                 onclick={clearRecruiterConversation}>Clear chat</button
               >
               <button
