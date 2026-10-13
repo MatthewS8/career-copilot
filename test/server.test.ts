@@ -770,6 +770,7 @@ test('recruiter chat returns a reply and newly spotted skills', async () => {
               content: JSON.stringify({
                 reply: 'Tell me more about Kafka.',
                 skills: ['Event-driven design'],
+                alertSuggestions: ['Backend Engineer Remote Europe'],
               }),
             },
           },
@@ -792,6 +793,7 @@ test('recruiter chat returns a reply and newly spotted skills', async () => {
     const body = await responseJson(response);
     assert.equal(body.reply, 'Tell me more about Kafka.');
     assert.deepEqual(body.skills, ['Event-driven design']);
+    assert.deepEqual(body.alertSuggestions, ['Backend Engineer Remote Europe']);
     assert.match(prompt, /Candidate: I built a message pipeline\./);
 
     const invalid = await originalFetch(`${baseUrl}/api/chat`, {
@@ -803,6 +805,76 @@ test('recruiter chat returns a reply and newly spotted skills', async () => {
       }),
     });
     assert.equal(invalid.status, 400);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('imports user-provided LinkedIn alert email leads without fetching LinkedIn', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-key';
+  let providerPrompt = '';
+  mockFetch((_url, options) => {
+    const request = JSON.parse(options.body) as { messages: { content: string }[] };
+    providerPrompt = request.messages[1]?.content ?? '';
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                jobs: [
+                  {
+                    title: 'Platform Engineer',
+                    company: 'Acme',
+                    location: 'Rome',
+                    description: 'Build APIs.',
+                  },
+                  {
+                    title: 'Platform Engineer',
+                    company: 'Acme',
+                    location: 'Rome',
+                    description: 'Duplicate.',
+                  },
+                  { title: 'Missing company', company: '', location: '', description: '' },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/import-linkedin-alert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        email: 'Jobs for you: Platform Engineer at Acme',
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await responseJson(response);
+    assert.match(providerPrompt, /Jobs for you/);
+    assert.deepEqual(body.jobs, [
+      {
+        title: 'Platform Engineer',
+        company: 'Acme',
+        location: 'Rome',
+        description: 'Build APIs.',
+        source: 'LinkedIn alert email',
+        url: 'https://www.google.com/search?ibp=htl%3Bjobs&q=Platform%20Engineer%20Acme',
+        companySearchUrl: 'https://www.google.com/search?q=Acme%20careers%20Platform%20Engineer',
+        score: 0,
+        reason:
+          'Imported from a LinkedIn job-alert email. Verify the current listing before applying.',
+      },
+    ]);
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;

@@ -38,11 +38,19 @@ A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to pr
 
 ## Recruiter and job recommendations
 
-The **AI recruiter** uses your profile, resume, and conversation to ask follow-up questions about your experience and identify skills you may want to add. Chat history is stored in your browser's local storage. When you send a chat turn, the profile, resume text, and recent conversation are sent to the selected AI provider.
+On first launch, JobFinder offers a skippable setup path: add a provider key, bring in your CV, have a recruiter conversation, then view recommendations. You can leave any step for later and return to it from the navigation.
+
+The **AI recruiter** uses your profile, resume, and conversation to ask follow-up questions about your experience, identify skills you may want to add, and propose a small set of focused LinkedIn job-alert searches. Chat history and alert suggestions are stored in your browser's local storage. When you send a chat turn, the profile, resume text, and recent conversation are sent to the selected AI provider.
 
 **Find more jobs** requests public listings from the [Remotive public API](https://github.com/remotive-com/remote-jobs-api) and the [Arbeitnow job-board API](https://www.arbeitnow.com/api/job-board-api). Remotive's API listings are delayed by 24 hours, and its usage guidance recommends no more than four requests per day (requests above two per minute are blocked). JobFinder makes one Remotive request for a search. Listings are linked to their source and labeled with the source name; Remotive's terms require linking to its listing and crediting Remotive. The source results are matched and ranked by the selected AI provider using your profile, location/work preferences, recent recruiter chat, and listing details. Those profile/chat details and the job snippets are sent to that provider when you request recommendations. Recommendations are stored in browser local storage; choose **Save to my jobs** to add one to your tracked jobs.
 
 Job-board data can be incomplete, delayed, or out of date. Check the original listing for current availability and application details; a recommendation is not a guarantee that a role is still open or a fit.
+
+## LinkedIn job-alert emails
+
+JobFinder can import leads from a LinkedIn job-alert email that you explicitly paste or load from a local `.eml`/text file. The file is read in your browser; only the email text you choose to import is sent to the selected AI provider for extraction, and the server does not retain it. Imported leads appear in **Recommended** with a Google Jobs search and a company-careers search link, so you can verify the role on permitted sources and save it like any other job.
+
+This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your email, fetch alert emails, scrape LinkedIn, or automatically crawl company websites. Remove private material from an email before importing if you do not want the provider to receive it.
 
 ## Other job-search tools
 

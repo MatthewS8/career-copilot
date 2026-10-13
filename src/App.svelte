@@ -38,12 +38,15 @@
     postedAt?: string;
     score: number;
     reason: string;
+    companySearchUrl?: string;
   };
 
   const PROFILE_KEY = 'jobfinder.profile.v1';
   const JOBS_KEY = 'jobfinder.jobs.v1';
   const CHAT_KEY = 'jobfinder.chat.v1';
   const SUGGESTIONS_KEY = 'jobfinder.suggestions.v1';
+  const HIDDEN_JOBS_KEY = 'jobfinder.hidden-job-urls.v1';
+  const ONBOARDING_KEY = 'jobfinder.onboarding.v1';
   const statuses: JobStatus[] = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
   const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
   const providerNames = {
@@ -76,6 +79,16 @@
   let jobs = readStorage<Job[]>(JOBS_KEY, []);
   let chatMessages = readStorage<ChatMessage[]>(CHAT_KEY, []);
   let suggestions = readStorage<Suggestion[]>(SUGGESTIONS_KEY, []);
+  let hiddenJobUrls = new Set(
+    readStorage<unknown[]>(HIDDEN_JOBS_KEY, []).filter(
+      (url): url is string => typeof url === 'string' && Boolean(linkFor(url)),
+    ),
+  );
+  let alertSuggestions = readStorage<string[]>('jobfinder.linkedin-alert-suggestions.v1', []);
+  let linkedinAlertText = '';
+  let linkedinAlertStatus = '';
+  let importingLinkedinAlert = false;
+  let onboardingStep = readStorage<number>(ONBOARDING_KEY, 0);
   let chatInput = '';
   let chatProvider: Provider = 'openai';
   let chatBusy = false;
@@ -83,8 +96,15 @@
   let discoveredSkills: string[] = [];
   let findingJobs = false;
   let suggestionsStatus = '';
-  let view: 'dashboard' | 'profile' | 'jobs' | 'settings' | 'recruiter' | 'suggestions' =
-    'dashboard';
+  let view:
+    | 'dashboard'
+    | 'profile'
+    | 'jobs'
+    | 'settings'
+    | 'recruiter'
+    | 'suggestions'
+    | 'linkedin-alerts'
+    | 'onboarding' = onboardingStep < 4 ? 'onboarding' : 'dashboard';
   let jobFilter: 'all' | JobStatus = 'all';
   let profileStatus = '';
   let activeJobId: string | null = null;
@@ -124,6 +144,17 @@
     view = nextView;
     if (nextView === 'settings') refreshProviderSettings();
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function completeOnboarding(): void {
+    onboardingStep = 4;
+    localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
+    setView('dashboard');
+  }
+
+  function advanceOnboarding(step: number): void {
+    onboardingStep = step;
+    localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
   }
 
   function updateSearchLink(site: 'linkedin' | 'indeed' | 'google') {
@@ -178,7 +209,10 @@
 
   function settingsResponseError(response: Response, data: { error?: string }): string {
     if (response.status === 403) {
-      return `For security, manage API keys from localhost. Open http://127.0.0.1:${location.port || '3000'} in this browser.`;
+      return (
+        data.error ||
+        `For security, manage API keys from localhost. Open http://127.0.0.1:${location.port || '3000'} in this browser.`
+      );
     }
     return data.error || 'Could not update this API key.';
   }
@@ -274,6 +308,17 @@
         (skill) => !known.includes(skill.toLowerCase()),
       );
       discoveredSkills = [...new Set([...discoveredSkills, ...found])];
+      if (Array.isArray(data.alertSuggestions)) {
+        alertSuggestions = (data.alertSuggestions as unknown[])
+          .filter((suggestion): suggestion is string => typeof suggestion === 'string')
+          .map((suggestion) => suggestion.trim())
+          .filter(Boolean)
+          .slice(0, 5);
+        localStorage.setItem(
+          'jobfinder.linkedin-alert-suggestions.v1',
+          JSON.stringify(alertSuggestions),
+        );
+      }
     } catch (error) {
       chatStatus = errorMessage(error, 'The recruiter could not reply.');
     } finally {
@@ -322,7 +367,11 @@
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not find jobs.');
-      const known = new Set([...suggestions, ...jobs].map((entry) => entry.url));
+      const known = new Set([
+        ...suggestions.map((entry) => entry.url),
+        ...jobs.map((entry) => entry.url),
+        ...hiddenJobUrls,
+      ]);
       const fresh = (data.jobs as Omit<Suggestion, 'id'>[])
         .filter((job) => !known.has(job.url))
         .map((job) => ({ ...job, id: crypto.randomUUID() }));
@@ -336,6 +385,66 @@
       suggestionsStatus = errorMessage(error, 'Could not find jobs.');
     } finally {
       findingJobs = false;
+    }
+  }
+
+  function companyCareerSearch(title: string, company: string): string {
+    return `https://www.google.com/search?q=${encodeURIComponent(`${company} careers ${title}`)}`;
+  }
+
+  async function handleLinkedinAlertFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const [file] = input.files ?? [];
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      linkedinAlertStatus =
+        'That email file is over 2 MB. Paste only the job-alert portion instead.';
+      input.value = '';
+      return;
+    }
+    try {
+      linkedinAlertText = await file.text();
+      linkedinAlertStatus = `${file.name} loaded locally. Review or trim it before importing.`;
+    } catch {
+      linkedinAlertStatus = 'Could not read that email file. Paste the alert text instead.';
+    }
+  }
+
+  async function importLinkedinAlert(): Promise<void> {
+    const email = linkedinAlertText.trim();
+    if (!email || importingLinkedinAlert) return;
+    importingLinkedinAlert = true;
+    linkedinAlertStatus = 'Reading the alert and preparing safe search links…';
+    try {
+      const response = await fetch('/api/import-linkedin-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: chatProvider, email }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not read that job alert.');
+      const known = new Set([
+        ...suggestions.map((entry) => entry.url),
+        ...jobs.map((entry) => entry.url),
+        ...hiddenJobUrls,
+      ]);
+      const fresh = (data.jobs as Omit<Suggestion, 'id'>[])
+        .map((job) => ({
+          ...job,
+          url: job.url || updateSearchLink('google'),
+          companySearchUrl: job.companySearchUrl || companyCareerSearch(job.title, job.company),
+          id: crypto.randomUUID(),
+        }))
+        .filter((job) => !known.has(job.url));
+      suggestions = [...fresh, ...suggestions];
+      persistSuggestions();
+      linkedinAlertStatus = fresh.length
+        ? `Added ${fresh.length} lead${fresh.length === 1 ? '' : 's'} to Recommended. Open the company-career search to verify each listing.`
+        : 'No new leads were found in that alert.';
+    } catch (error) {
+      linkedinAlertStatus = errorMessage(error, 'Could not read that job alert.');
+    } finally {
+      importingLinkedinAlert = false;
     }
   }
 
@@ -360,6 +469,14 @@
   function dismissSuggestion(id: string): void {
     suggestions = suggestions.filter((entry) => entry.id !== id);
     persistSuggestions();
+  }
+
+  function hideSuggestion(suggestion: Suggestion): void {
+    hiddenJobUrls.add(suggestion.url);
+    hiddenJobUrls = hiddenJobUrls;
+    localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify([...hiddenJobUrls]));
+    dismissSuggestion(suggestion.id);
+    suggestionsStatus = 'Job hidden. It will not be suggested again from the same listing.';
   }
 
   function saveProfile(event: SubmitEvent): void {
@@ -733,6 +850,15 @@
       </button>
       <button
         class="nav-item"
+        class:is-active={view === 'linkedin-alerts'}
+        type="button"
+        data-view="linkedin-alerts"
+        onclick={() => setView('linkedin-alerts')}
+      >
+        <span class="nav-icon" aria-hidden="true">✉</span> LinkedIn alerts
+      </button>
+      <button
+        class="nav-item"
         class:is-active={view === 'jobs'}
         type="button"
         data-view="jobs"
@@ -771,6 +897,8 @@
             profile: 'My profile',
             recruiter: 'AI recruiter',
             suggestions: 'Recommended jobs',
+            'linkedin-alerts': 'LinkedIn alerts',
+            onboarding: 'Getting started',
             jobs: 'Saved jobs',
             settings: 'API settings',
           }[view]}</strong
@@ -788,6 +916,151 @@
     </header>
 
     <main>
+      {#if view === 'onboarding'}
+        <section class="view onboarding-view" id="view-onboarding">
+          <p class="eyebrow">WELCOME TO JOBFINDER</p>
+          <h1>Build your search<br />with <em>intention.</em></h1>
+          <p class="heading-copy">
+            Set up the essentials in a few focused steps. You can skip any of them and return
+            whenever you are ready.
+          </p>
+          <div class="onboarding-steps" aria-label="Getting started progress">
+            {#each ['AI key', 'Your CV', 'Recruiter chat', 'Recommendations'] as label, index}
+              <span class:current={onboardingStep === index} class:complete={onboardingStep > index}
+                >{index + 1}. {label}</span
+              >
+            {/each}
+          </div>
+          <article class="panel onboarding-card">
+            {#if onboardingStep === 0}
+              <p class="eyebrow">STEP 1 OF 4</p>
+              <h2>Add an AI provider key</h2>
+              <p>
+                Choose the provider you want to use. Your key is encrypted on this computer and is
+                never shown again.
+              </p>
+              <label class="field"
+                ><span>Provider</span><select bind:value={chatProvider}
+                  >{#each providers as provider}<option value={provider}
+                      >{providerNames[provider]}</option
+                    >{/each}</select
+                ></label
+              >
+              {#if providerSettings[chatProvider].configured}
+                <p class="status-message">{providerNames[chatProvider]} is ready.</p>
+                <button
+                  class="button button-dark"
+                  type="button"
+                  onclick={() => advanceOnboarding(1)}>Continue to your CV →</button
+                >
+              {:else}
+                <form
+                  class="provider-key-form"
+                  onsubmit={(event) => saveProviderKey(chatProvider, event)}
+                >
+                  <label class="field"
+                    ><span>API key</span><input
+                      type="password"
+                      autocomplete="off"
+                      bind:value={providerKeys[chatProvider]}
+                      placeholder="Paste your key"
+                    /></label
+                  >
+                  <div class="provider-actions">
+                    <span class="status-message">{providerStatuses[chatProvider]}</span><button
+                      class="button button-dark"
+                      type="submit"
+                      disabled={providerBusy[chatProvider]}>Save key</button
+                    >
+                  </div>
+                </form>
+              {/if}
+            {:else if onboardingStep === 1}
+              <p class="eyebrow">STEP 2 OF 4</p>
+              <h2>Bring your CV</h2>
+              <p>
+                Upload a plain-text, Markdown, or LaTeX CV, or paste its text. It stays in this
+                browser until you choose an AI action.
+              </p>
+              <label class="upload-control" for="onboarding-resume"
+                ><span class="upload-symbol" aria-hidden="true">↑</span><span
+                  ><strong>Choose a resume file</strong><small
+                    >.txt, .md, and .tex are read locally</small
+                  ></span
+                ><input
+                  id="onboarding-resume"
+                  type="file"
+                  accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"
+                  onchange={handleResumeFile}
+                /></label
+              >
+              <label class="field"
+                ><span>Resume text</span><textarea
+                  rows="8"
+                  bind:value={profile.resume}
+                  placeholder="Paste your CV here."
+                ></textarea></label
+              >
+              <div class="provider-actions">
+                <button class="text-button" type="button" onclick={() => advanceOnboarding(2)}
+                  >Skip for now</button
+                ><button
+                  class="button button-dark"
+                  type="button"
+                  onclick={() => {
+                    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+                    advanceOnboarding(2);
+                  }}>Continue to recruiter →</button
+                >
+              </div>
+            {:else if onboardingStep === 2}
+              <p class="eyebrow">STEP 3 OF 4</p>
+              <h2>Have a focused recruiter chat</h2>
+              <p>
+                Tell the recruiter about the work you want next. It will turn your profile and
+                answers into a better search plan, including LinkedIn alert ideas.
+              </p>
+              <div class="provider-actions">
+                <button class="text-button" type="button" onclick={() => advanceOnboarding(3)}
+                  >Skip for now</button
+                ><button
+                  class="button button-dark"
+                  type="button"
+                  disabled={!providerSettings[chatProvider].configured}
+                  onclick={() => {
+                    setView('recruiter');
+                    if (!chatMessages.length) void restartChat();
+                  }}>Start the chat →</button
+                >
+              </div>
+            {:else}
+              <p class="eyebrow">STEP 4 OF 4</p>
+              <h2>Your search is ready to take shape.</h2>
+              <p>
+                Review roles from public job boards, bring in job alerts you receive, and verify
+                promising roles on the company careers page.
+              </p>
+              <div class="provider-actions">
+                <button class="text-button" type="button" onclick={completeOnboarding}
+                  >Go to overview</button
+                ><button
+                  class="button button-dark"
+                  type="button"
+                  disabled={findingJobs || !providerSettings[chatProvider].configured}
+                  onclick={() => {
+                    void findJobs();
+                    completeOnboarding();
+                  }}>Find recommendations →</button
+                >
+              </div>
+            {/if}
+            <button class="onboarding-skip" type="button" onclick={completeOnboarding}
+              >Set this up later</button
+            >
+          </article>
+        </section>
+      {/if}
+
       {#if view === 'dashboard'}
         <section class="view" id="view-dashboard">
           <div class="page-heading">
@@ -1297,6 +1570,23 @@
                 {/each}
               </div>
             {/if}
+            {#if alertSuggestions.length}
+              <div class="skill-suggestions alert-suggestions">
+                <strong>LinkedIn job alerts worth activating</strong>
+                <p>
+                  Use one alert per focused search. LinkedIn controls the alert; JobFinder does not
+                  access your account.
+                </p>
+                {#each alertSuggestions as suggestion (suggestion)}
+                  <a
+                    class="job-action-link"
+                    href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(suggestion)}&f_TPR=r604800`}
+                    target="_blank"
+                    rel="noopener noreferrer">Create alert: {suggestion} ↗</a
+                  >
+                {/each}
+              </div>
+            {/if}
             <form class="chat-form" onsubmit={sendChatMessage}>
               <label class="sr-only" for="chat-input">Your message</label>
               <textarea
@@ -1325,6 +1615,61 @@
                 >
               </div>
             </form>
+          </article>
+        </section>
+      {/if}
+
+      {#if view === 'linkedin-alerts'}
+        <section class="view" id="view-linkedin-alerts">
+          <div class="inner-heading">
+            <p class="eyebrow">YOUR LINKEDIN INBOX, ON YOUR TERMS</p>
+            <h1>Bring alerts in,<br /><em>without scraping.</em></h1>
+            <p class="heading-copy">
+              Paste a LinkedIn job-alert email or load a local .eml/text export. The selected
+              provider extracts leads from only what you submit; the email is not retained by the
+              server.
+            </p>
+          </div>
+          <div class="form-note">
+            <span aria-hidden="true">✳</span>
+            <div>
+              <strong>Verification stays with you.</strong> Each imported lead becomes a recommendation
+              with Google Jobs and company-career search links. JobFinder does not sign in to LinkedIn,
+              scrape LinkedIn, or automatically crawl company sites.
+            </div>
+          </div>
+          <article class="panel alert-import-card">
+            <label class="upload-control" for="linkedin-alert-file"
+              ><span class="upload-symbol" aria-hidden="true">↑</span><span
+                ><strong>Choose an alert email file</strong><small
+                  >.eml or .txt — read locally before you import</small
+                ></span
+              ><input
+                id="linkedin-alert-file"
+                type="file"
+                accept=".eml,.txt,message/rfc822,text/plain"
+                onchange={handleLinkedinAlertFile}
+              /></label
+            >
+            <label class="field"
+              ><span>LinkedIn job-alert email text</span><textarea
+                rows="12"
+                maxlength="20000"
+                bind:value={linkedinAlertText}
+                placeholder="Paste the job-alert email here. Remove anything you do not want the AI provider to read."
+              ></textarea></label
+            >
+            <div class="provider-actions">
+              <span class="status-message" role="status">{linkedinAlertStatus}</span><button
+                class="button button-dark"
+                type="button"
+                disabled={importingLinkedinAlert ||
+                  !linkedinAlertText.trim() ||
+                  !providerSettings[chatProvider].configured}
+                onclick={importLinkedinAlert}
+                >{importingLinkedinAlert ? 'Importing…' : 'Import leads'}</button
+              >
+            </div>
           </article>
         </section>
       {/if}
@@ -1383,6 +1728,14 @@
                       rel="noopener noreferrer">View listing ↗</a
                     >
                   {/if}
+                  {#if suggestion.companySearchUrl && linkFor(suggestion.companySearchUrl)}
+                    <a
+                      class="job-action-link"
+                      href={linkFor(suggestion.companySearchUrl)}
+                      target="_blank"
+                      rel="noopener noreferrer">Search company careers ↗</a
+                    >
+                  {/if}
                   <button
                     class="job-action-link"
                     type="button"
@@ -1391,7 +1744,7 @@
                   <button
                     class="job-remove"
                     type="button"
-                    onclick={() => dismissSuggestion(suggestion.id)}>Dismiss</button
+                    onclick={() => hideSuggestion(suggestion)}>Hide this job</button
                   >
                 </div>
               </article>
