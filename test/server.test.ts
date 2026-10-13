@@ -712,8 +712,11 @@ test('logs provider failure status without logging provider content', async () =
       }),
     });
     assert.equal(response.status, 502);
-    assert.match(loggedMessage, /openai, 429, Error/);
+    const body = await responseJson(response);
+    assert.match(body.error, /rate-limited/);
+    assert.match(loggedMessage, /openai, 429, Error, rate-limited/);
     assert.doesNotMatch(loggedMessage, /Sensitive|Private|test-key/);
+    assert.doesNotMatch(body.error, /Sensitive|Private|test-key/);
   } finally {
     global.fetch = originalFetch;
     console.error = originalConsoleError;
