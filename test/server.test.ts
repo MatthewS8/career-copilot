@@ -820,7 +820,8 @@ test('imports user-provided LinkedIn alert email leads without fetching LinkedIn
   const originalFetch = global.fetch;
   process.env.OPENAI_API_KEY = 'environment-key';
   let providerPrompt = '';
-  mockFetch((_url, options) => {
+  mockFetch((url, options) => {
+    if (url.startsWith('https://jobicy.com/')) return new Response(JSON.stringify({ jobs: [] }));
     const request = JSON.parse(options.body) as { messages: { content: string }[] };
     providerPrompt = request.messages[1]?.content ?? '';
     return new Response(
@@ -835,6 +836,7 @@ test('imports user-provided LinkedIn alert email leads without fetching LinkedIn
                     company: 'Acme',
                     location: 'Rome',
                     description: 'Build APIs.',
+                    url: '',
                   },
                   {
                     title: 'Platform Engineer',
@@ -858,7 +860,8 @@ test('imports user-provided LinkedIn alert email leads without fetching LinkedIn
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         provider: 'openai',
-        email: 'Jobs for you: Platform Engineer at Acme',
+        email:
+          'Jobs for you: Platform Engineer at Acme <a href=3D"https://www.linkedin.com/comm/jobs/view/123?trk=3Demail">View job</a>',
       }),
     });
     assert.equal(response.status, 200);
@@ -871,17 +874,148 @@ test('imports user-provided LinkedIn alert email leads without fetching LinkedIn
         location: 'Rome',
         description: 'Build APIs.',
         source: 'LinkedIn alert email',
-        url: 'https://www.google.com/search?ibp=htl%3Bjobs&q=Platform%20Engineer%20Acme',
+        url: 'https://www.linkedin.com/comm/jobs/view/123?trk=email',
         companySearchUrl: 'https://www.google.com/search?q=Acme%20careers%20Platform%20Engineer',
-        score: 0,
+        matchEvaluated: false,
         reason:
           'Imported from a LinkedIn job-alert email. Verify the current listing before applying.',
       },
     ]);
+    assert.deepEqual(body.verification, {
+      configured: ['Jobicy'],
+      checked: ['Jobicy'],
+      unavailable: [],
+      leadCount: 1,
+      limited: false,
+    });
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('verifies alert leads with configured permitted job APIs without forwarding the email', async () => {
+  const oldOpenAiKey = process.env.OPENAI_API_KEY;
+  const oldAdzunaId = process.env.ADZUNA_APP_ID;
+  const oldAdzunaKey = process.env.ADZUNA_APP_KEY;
+  const oldAdzunaCountries = process.env.ADZUNA_COUNTRIES;
+  const oldJoobleKeys = process.env.JOOBLE_API_KEYS;
+  const originalFetch = global.fetch;
+  process.env.OPENAI_API_KEY = 'environment-key';
+  process.env.ADZUNA_APP_ID = 'adzuna-id';
+  process.env.ADZUNA_APP_KEY = 'adzuna-key';
+  process.env.ADZUNA_COUNTRIES = 'it';
+  process.env.JOOBLE_API_KEYS = JSON.stringify({ it: 'jooble-key' });
+  const sourceRequests: CapturedRequest[] = [];
+  mockFetch((url, options) => {
+    if (url.startsWith('https://jobicy.com/')) {
+      sourceRequests.push({ url, options });
+      return new Response(
+        JSON.stringify({
+          jobs: [
+            {
+              jobTitle: 'Platform Engineer',
+              companyName: 'Acme',
+              jobGeo: 'Europe',
+              url: 'https://jobicy.com/jobs/platform-engineer-acme',
+              jobExcerpt: 'Build APIs.',
+              pubDate: '2026-10-01T00:00:00Z',
+            },
+          ],
+        }),
+      );
+    }
+    if (url.startsWith('https://api.adzuna.com/')) {
+      sourceRequests.push({ url, options });
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: 'Platform Engineer',
+              company: { display_name: 'Acme' },
+              location: { display_name: 'Rome' },
+              redirect_url: 'https://www.adzuna.it/details/123',
+              description: 'Build APIs.',
+              created: '2026-10-01T00:00:00Z',
+            },
+          ],
+        }),
+      );
+    }
+    if (url.startsWith('https://jooble.org/')) {
+      sourceRequests.push({ url, options });
+      return new Response(
+        JSON.stringify({
+          jobs: [
+            {
+              title: 'Platform Engineer',
+              company: 'Acme',
+              location: 'Rome',
+              link: 'https://it.jooble.org/jdp/123',
+              snippet: 'Build APIs.',
+              updated: '2026-10-01T00:00:00Z',
+            },
+          ],
+        }),
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                jobs: [
+                  {
+                    title: 'Platform Engineer',
+                    company: 'Acme',
+                    location: 'Rome',
+                    description: '',
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/import-linkedin-alert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', email: 'private alert body' }),
+    });
+    assert.equal(response.status, 200);
+    const body = await responseJson(response);
+    assert.deepEqual(body.verification, {
+      configured: ['Jobicy', 'Adzuna', 'Jooble'],
+      checked: ['Jobicy', 'Adzuna', 'Jooble'],
+      unavailable: [],
+      leadCount: 1,
+      limited: false,
+    });
+    assert.deepEqual(
+      (body.jobs as { source: string }[]).slice(0, 3).map((job) => job.source),
+      ['Jobicy (verified)', 'Adzuna (verified)', 'Jooble (verified)'],
+    );
+    assert.equal(sourceRequests.length, 3);
+    for (const request of sourceRequests) {
+      assert.doesNotMatch(`${request.url}\n${request.options.body}`, /private alert body/);
+    }
+  } finally {
+    global.fetch = originalFetch;
+    if (oldOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = oldOpenAiKey;
+    if (oldAdzunaId === undefined) delete process.env.ADZUNA_APP_ID;
+    else process.env.ADZUNA_APP_ID = oldAdzunaId;
+    if (oldAdzunaKey === undefined) delete process.env.ADZUNA_APP_KEY;
+    else process.env.ADZUNA_APP_KEY = oldAdzunaKey;
+    if (oldAdzunaCountries === undefined) delete process.env.ADZUNA_COUNTRIES;
+    else process.env.ADZUNA_COUNTRIES = oldAdzunaCountries;
+    if (oldJoobleKeys === undefined) delete process.env.JOOBLE_API_KEYS;
+    else process.env.JOOBLE_API_KEYS = oldJoobleKeys;
   }
 });
 
@@ -956,6 +1090,7 @@ test('finds jobs from public boards and ranks them with the provider', async () 
         source: 'Remotive',
         postedAt: '2026-10-01T12:00:00.000Z',
         score: 88,
+        matchEvaluated: true,
         reason: 'Rust experience',
       },
     ]);
@@ -1062,6 +1197,7 @@ test('keeps matching resilient to partial failures and malformed or unsafe job r
         source: 'Arbeitnow',
         postedAt: '2026-10-05T20:00:00.000Z',
         score: 76,
+        matchEvaluated: true,
         reason: 'Relevant skills and remote location.',
       },
     ]);

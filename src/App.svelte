@@ -37,9 +37,19 @@
     description: string;
     source: string;
     postedAt?: string;
-    score: number;
+    score?: number;
+    matchEvaluated?: boolean;
+    originalUrl?: string;
+    addedAt?: string;
     reason: string;
     companySearchUrl?: string;
+  };
+  type AlertVerification = {
+    configured: string[];
+    checked: string[];
+    unavailable: string[];
+    leadCount: number;
+    limited: boolean;
   };
 
   const PROFILE_KEY = 'jobfinder.profile.v1';
@@ -97,6 +107,11 @@
   let discoveredSkills: string[] = [];
   let findingJobs = false;
   let suggestionsStatus = '';
+  let suggestionPage = 1;
+  const suggestionsPerPage = 10;
+  let suggestionSort: 'match' | 'date' = 'match';
+  let suggestionLocation = '';
+  let draggingAlertFile = false;
   let view:
     | 'dashboard'
     | 'profile'
@@ -132,6 +147,24 @@
     ['Applying', 'Applied', 'Interviewing'].includes(job.status),
   ).length;
   $: visibleJobs = jobs.filter((job) => jobFilter === 'all' || job.status === jobFilter);
+  $: suggestionLocations = [
+    ...new Set(suggestions.map((suggestion) => suggestion.location).filter(Boolean)),
+  ].sort((first, second) => first.localeCompare(second));
+  $: filteredSuggestions = suggestions.filter(
+    (suggestion) => !suggestionLocation || suggestion.location === suggestionLocation,
+  );
+  $: sortedSuggestions = [...filteredSuggestions].sort((first, second) => {
+    if (suggestionSort === 'date') {
+      return suggestionDate(second) - suggestionDate(first);
+    }
+    return (second.score ?? -1) - (first.score ?? -1);
+  });
+  $: suggestionPageCount = Math.max(1, Math.ceil(sortedSuggestions.length / suggestionsPerPage));
+  $: if (suggestionPage > suggestionPageCount) suggestionPage = suggestionPageCount;
+  $: visibleSuggestions = sortedSuggestions.slice(
+    (suggestionPage - 1) * suggestionsPerPage,
+    suggestionPage * suggestionsPerPage,
+  );
 
   onMount(() => {
     void refreshProviderSettings();
@@ -413,8 +446,9 @@
       ]);
       const fresh = (data.jobs as Omit<Suggestion, 'id'>[])
         .filter((job) => !known.has(job.url))
-        .map((job) => ({ ...job, id: crypto.randomUUID() }));
+        .map((job) => ({ ...job, id: crypto.randomUUID(), addedAt: new Date().toISOString() }));
       suggestions = [...fresh, ...suggestions];
+      if (fresh.length) suggestionPage = 1;
       persistSuggestions();
       suggestionsStatus = fresh.length
         ? `Found ${fresh.length} new ${fresh.length === 1 ? 'match' : 'matches'}.`
@@ -431,29 +465,62 @@
     return `https://www.google.com/search?q=${encodeURIComponent(`${company} careers ${title}`)}`;
   }
 
-  async function handleLinkedinAlertFile(event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    const [file] = input.files ?? [];
-    if (!file) return;
+  function suggestionDate(suggestion: Suggestion): number {
+    const value = suggestion.postedAt || suggestion.addedAt;
+    const timestamp = value ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function resetSuggestionPage(): void {
+    suggestionPage = 1;
+  }
+
+  async function loadLinkedinAlertFile(file: File, input?: HTMLInputElement): Promise<void> {
+    const supported =
+      /\.(eml|txt)$/i.test(file.name) || ['message/rfc822', 'text/plain'].includes(file.type);
+    if (!supported) {
+      linkedinAlertStatus = 'Drop an .eml or .txt alert file.';
+      if (input) input.value = '';
+      return;
+    }
     if (file.size > 2_000_000) {
       linkedinAlertStatus =
         'That email file is over 2 MB. Paste only the job-alert portion instead.';
-      input.value = '';
+      if (input) input.value = '';
       return;
     }
     try {
       linkedinAlertText = await file.text();
-      linkedinAlertStatus = `${file.name} loaded locally. Review or trim it before importing.`;
+      if (!providerSettings[chatProvider].configured) {
+        linkedinAlertStatus = `${file.name} loaded locally. Configure an AI provider before importing it.`;
+        return;
+      }
+      linkedinAlertStatus = `${file.name} loaded locally. Extracting leads…`;
+      await importLinkedinAlert(linkedinAlertText);
     } catch {
       linkedinAlertStatus = 'Could not read that email file. Paste the alert text instead.';
     }
   }
 
-  async function importLinkedinAlert(): Promise<void> {
-    const email = linkedinAlertText.trim();
+  async function handleLinkedinAlertFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const [file] = input.files ?? [];
+    if (!file) return;
+    await loadLinkedinAlertFile(file, input);
+  }
+
+  async function handleLinkedinAlertDrop(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    draggingAlertFile = false;
+    const [file] = event.dataTransfer?.files ?? [];
+    if (file) await loadLinkedinAlertFile(file);
+  }
+
+  async function importLinkedinAlert(emailText = linkedinAlertText): Promise<void> {
+    const email = emailText.trim();
     if (!email || importingLinkedinAlert) return;
     importingLinkedinAlert = true;
-    linkedinAlertStatus = 'Reading the alert and preparing safe search links…';
+    linkedinAlertStatus = 'Reading the alert and checking permitted job sources…';
     try {
       const response = await fetch('/api/import-linkedin-alert', {
         method: 'POST',
@@ -473,13 +540,25 @@
           url: job.url || updateSearchLink('google'),
           companySearchUrl: job.companySearchUrl || companyCareerSearch(job.title, job.company),
           id: crypto.randomUUID(),
+          addedAt: new Date().toISOString(),
         }))
         .filter((job) => !known.has(job.url));
       suggestions = [...fresh, ...suggestions];
+      if (fresh.length) suggestionPage = 1;
       persistSuggestions();
+      const verification = data.verification as AlertVerification | undefined;
+      const sourceStatus = verification?.checked.length
+        ? ` Checked ${verification.checked.join(', ')}.`
+        : ' No configured live-source checks completed.';
+      const unavailable = verification?.unavailable.length
+        ? ` ${verification.unavailable.join(', ')} could not be reached.`
+        : '';
+      const limitNotice = verification?.limited
+        ? ' Only the first five extracted leads were checked to respect source rate limits.'
+        : '';
       linkedinAlertStatus = fresh.length
-        ? `Added ${fresh.length} lead${fresh.length === 1 ? '' : 's'} to Recommended. Open the company-career search to verify each listing.`
-        : 'No new leads were found in that alert.';
+        ? `Added ${fresh.length} lead${fresh.length === 1 ? '' : 's'} to Recommended.${sourceStatus}${unavailable}${limitNotice}`
+        : `No new leads were found in that alert.${sourceStatus}${unavailable}${limitNotice}`;
     } catch (error) {
       linkedinAlertStatus = errorMessage(error, 'Could not read that job alert.');
     } finally {
@@ -508,6 +587,22 @@
   function dismissSuggestion(id: string): void {
     suggestions = suggestions.filter((entry) => entry.id !== id);
     persistSuggestions();
+  }
+
+  function suggestionScoreLabel(suggestion: Suggestion): string {
+    if (suggestion.matchEvaluated === false) {
+      return suggestion.source === 'LinkedIn alert email'
+        ? 'From alert email — not evaluated'
+        : 'Live equivalent — not evaluated';
+    }
+    return `${suggestion.score ?? 0}% match`;
+  }
+
+  function suggestionScoreClass(suggestion: Suggestion): string {
+    const score = suggestion.score ?? 0;
+    if (score >= 75) return 'match-high';
+    if (score >= 50) return 'match-medium';
+    return 'match-low';
   }
 
   function hideSuggestion(suggestion: Suggestion): void {
@@ -1697,16 +1792,28 @@
           <div class="form-note">
             <span aria-hidden="true">✳</span>
             <div>
-              <strong>Verification stays with you.</strong> Each imported lead becomes a recommendation
-              with Google Jobs and company-career search links. JobFinder does not sign in to LinkedIn,
-              scrape LinkedIn, or automatically crawl company sites.
+              <strong>Only permitted sources are checked.</strong> JobFinder can check the extracted title,
+              company, and location against Jobicy and any configured Adzuna or Jooble APIs. It never
+              signs in to LinkedIn, scrapes LinkedIn, or automatically crawls company sites.
             </div>
           </div>
           <article class="panel alert-import-card">
-            <label class="upload-control" for="linkedin-alert-file"
+            <label
+              class="upload-control drop-zone"
+              class:is-dragging={draggingAlertFile}
+              for="linkedin-alert-file"
+              ondragover={(event) => {
+                event.preventDefault();
+                draggingAlertFile = true;
+              }}
+              ondragleave={(event) => {
+                if (event.currentTarget === event.target) draggingAlertFile = false;
+              }}
+              ondrop={handleLinkedinAlertDrop}
               ><span class="upload-symbol" aria-hidden="true">↑</span><span
                 ><strong>Choose an alert email file</strong><small
-                  >.eml or .txt — read locally before you import</small
+                  >Drop an .eml or .txt file here, or click to choose — lead extraction starts
+                  automatically</small
                 ></span
               ><input
                 id="linkedin-alert-file"
@@ -1730,7 +1837,7 @@
                 disabled={importingLinkedinAlert ||
                   !linkedinAlertText.trim() ||
                   !providerSettings[chatProvider].configured}
-                onclick={importLinkedinAlert}
+                onclick={() => void importLinkedinAlert()}
                 >{importingLinkedinAlert ? 'Importing…' : 'Import leads'}</button
               >
             </div>
@@ -1745,7 +1852,8 @@
             <h1>Recommended <em>jobs.</em></h1>
             <p class="heading-copy">
               Postings found on public job boards and ranked against your profile. Review them, save
-              the ones you like, and apply later.
+              the ones you like, and apply later. Leads imported from an alert email are labeled as
+              not evaluated rather than assigned a match percentage.
             </p>
           </div>
           <div class="provider-actions">
@@ -1757,6 +1865,32 @@
               onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find more jobs'}</button
             >
           </div>
+          <div class="recommendation-controls" aria-label="Recommendation controls">
+            <label class="field"
+              ><span>Order by</span><select
+                bind:value={suggestionSort}
+                onchange={resetSuggestionPage}
+                ><option value="match">Best match</option><option value="date">Most recent</option
+                ></select
+              ></label
+            >
+            <label class="field"
+              ><span>Place</span><select
+                bind:value={suggestionLocation}
+                onchange={resetSuggestionPage}
+                ><option value="">All places</option
+                >{#each suggestionLocations as location (location)}
+                  <option value={location}>{location}</option>
+                {/each}</select
+              ></label
+            >
+            <span class="field-hint"
+              >{sortedSuggestions.length} of {suggestions.length} recommendation{suggestions.length ===
+              1
+                ? ''
+                : 's'}</span
+            >
+          </div>
           <div class="job-list">
             {#if suggestions.length === 0}
               <div class="empty-state">
@@ -1765,7 +1899,7 @@
                 <p>Ask the AI recruiter to find jobs for you.</p>
               </div>
             {/if}
-            {#each suggestions as suggestion (suggestion.id)}
+            {#each visibleSuggestions as suggestion (suggestion.id)}
               <article class="job-card">
                 <div class="job-card-top">
                   <div class="job-company">
@@ -1773,14 +1907,56 @@
                       >{(suggestion.company || '?').trim().slice(0, 1).toUpperCase()}</span
                     >
                     <div>
-                      <h3>{suggestion.title}</h3>
+                      {#if suggestion.source === 'LinkedIn alert email' && linkFor(suggestion.url)}
+                        <h3>
+                          <a
+                            class="job-title-link"
+                            href={linkFor(suggestion.url)}
+                            target="_blank"
+                            rel="noopener noreferrer">{suggestion.title}</a
+                          >
+                        </h3>
+                      {:else}
+                        <h3>{suggestion.title}</h3>
+                      {/if}
                       <p>{suggestion.company} · {suggestion.location} · {suggestion.source}</p>
                       {#if suggestion.postedAt}
                         <p>Posted {new Date(suggestion.postedAt).toLocaleDateString()}</p>
                       {/if}
+                      {#if suggestion.source.startsWith('Adzuna')}
+                        <a
+                          class="source-attribution adzuna-attribution"
+                          href="https://www.adzuna.com"
+                          target="_blank"
+                          rel="noopener noreferrer">Adzuna</a
+                        >
+                      {:else if suggestion.source.startsWith('Jobicy')}
+                        <a
+                          class="source-attribution"
+                          href="https://jobicy.com"
+                          target="_blank"
+                          rel="noopener noreferrer">Source: Jobicy</a
+                        >
+                      {:else if suggestion.source.startsWith('Jooble')}
+                        <a
+                          class="source-attribution"
+                          href="https://jooble.org"
+                          target="_blank"
+                          rel="noopener noreferrer">Source: Jooble</a
+                        >
+                      {/if}
                     </div>
                   </div>
-                  <span class="nav-count">{suggestion.score}% match</span>
+                  {#if suggestion.matchEvaluated === false}
+                    <span class="match-unscored">{suggestionScoreLabel(suggestion)}</span>
+                  {:else}
+                    <span
+                      class:match-high={suggestionScoreClass(suggestion) === 'match-high'}
+                      class:match-medium={suggestionScoreClass(suggestion) === 'match-medium'}
+                      class:match-low={suggestionScoreClass(suggestion) === 'match-low'}
+                      class="match-score">{suggestionScoreLabel(suggestion)}</span
+                    >
+                  {/if}
                 </div>
                 {#if suggestion.reason}<p class="job-notes">{suggestion.reason}</p>{/if}
                 <div class="job-card-footer">
@@ -1790,6 +1966,14 @@
                       href={linkFor(suggestion.url)}
                       target="_blank"
                       rel="noopener noreferrer">View listing ↗</a
+                    >
+                  {/if}
+                  {#if suggestion.originalUrl && linkFor(suggestion.originalUrl)}
+                    <a
+                      class="job-action-link"
+                      href={linkFor(suggestion.originalUrl)}
+                      target="_blank"
+                      rel="noopener noreferrer">Open original alert listing ↗</a
                     >
                   {/if}
                   {#if suggestion.companySearchUrl && linkFor(suggestion.companySearchUrl)}
@@ -1814,6 +1998,23 @@
               </article>
             {/each}
           </div>
+          {#if suggestions.length > suggestionsPerPage}
+            <nav class="pagination" aria-label="Recommended jobs pages">
+              <button
+                class="text-button"
+                type="button"
+                disabled={suggestionPage === 1}
+                onclick={() => (suggestionPage -= 1)}>Previous</button
+              >
+              <span>Page {suggestionPage} of {suggestionPageCount}</span>
+              <button
+                class="text-button"
+                type="button"
+                disabled={suggestionPage === suggestionPageCount}
+                onclick={() => (suggestionPage += 1)}>Next</button
+              >
+            </nav>
+          {/if}
         </section>
       {/if}
 

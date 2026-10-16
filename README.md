@@ -28,6 +28,20 @@ OPENAI_API_KEY=your-key npm start
 
 Supported environment variables are `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `ANTHROPIC_API_KEY`. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. A key saved in API settings takes precedence over that provider's environment key; removing the saved key falls back to the environment key. Set `JOBFINDER_DATA_DIR` to choose another private directory for the encryption and encrypted-key files.
 
+Optional live-job verification for imported alerts is configured only in the server environment:
+
+```sh
+read -r -p 'Adzuna app ID: ' ADZUNA_APP_ID
+read -r -s -p 'Adzuna app key: ' ADZUNA_APP_KEY; printf '\n'
+read -r -s -p 'Jooble API-key JSON: ' JOOBLE_API_KEYS; printf '\n'
+export ADZUNA_APP_ID ADZUNA_APP_KEY JOOBLE_API_KEYS
+ADZUNA_COUNTRIES=it,de,fr npm start
+```
+
+`ADZUNA_COUNTRIES` is a comma-separated list of Adzuna two-letter country codes to query. Jooble requires a separate key for every country domain, supplied in the `JOOBLE_API_KEYS` JSON map. Keep these values out of source control, browser storage, and shell history. Jobicy needs no key.
+
+Before configuring a source, review and accept its current terms. JobFinder preserves visible source attribution and original-listing links for Jobicy, Adzuna, and Jooble results; it does not guarantee that a source result is still open or equivalent to an alert lead. Jooble's free allocation is limited, so configure only the countries you genuinely intend to search.
+
 Encryption protects the API keys at rest from someone who can read only the encrypted-key file. The JobFinder server must be able to read both files to use your key, so it cannot protect against someone with access to your OS account or server process. If the encrypted file is damaged and there is no backup, remove `.data/provider-keys.enc` to discard saved keys and try again; keep `key-encryption.key`. Restart JobFinder after restoring files from backup. JobFinder has no sign-in or multi-user protection: keep it bound to localhost by default and do not expose it to an untrusted network. All API endpoints accept requests only when the HTTP Host is a localhost address.
 
 ## Autofill your profile
@@ -42,21 +56,22 @@ On first launch, JobFinder offers a skippable setup path: add a provider key, br
 
 The **AI recruiter** uses your profile, resume, and conversation to ask follow-up questions about your experience, identify skills you may want to add, and propose a small set of focused LinkedIn job-alert searches. Chat history and alert suggestions are stored in your browser's local storage. When you send a chat turn, the profile, resume text, and recent conversation are sent to the selected AI provider.
 
-**Find more jobs** requests public listings from the [Remotive public API](https://github.com/remotive-com/remote-jobs-api) and the [Arbeitnow job-board API](https://www.arbeitnow.com/api/job-board-api). Remotive's API listings are delayed by 24 hours, and its usage guidance recommends no more than four requests per day (requests above two per minute are blocked). JobFinder makes one Remotive request for a search. Listings are linked to their source and labeled with the source name; Remotive's terms require linking to its listing and crediting Remotive. The source results are matched and ranked by the selected AI provider using your profile, location/work preferences, recent recruiter chat, and listing details. Those profile/chat details and the job snippets are sent to that provider when you request recommendations. Recommendations are stored in browser local storage; choose **Save to my jobs** to add one to your tracked jobs.
+**Find more jobs** requests public listings from the [Remotive public API](https://github.com/remotive-com/remote-jobs-api) and the [Arbeitnow job-board API](https://www.arbeitnow.com/api/job-board-api). Remotive's API listings are delayed by 24 hours, and its usage guidance recommends no more than four requests per day (requests above two per minute are blocked). JobFinder makes one Remotive request for a search. Listings are linked to their source and labeled with the source name; Remotive's terms require linking to its listing and crediting Remotive. The source results are matched and ranked by the selected AI provider using your profile, location/work preferences, recent recruiter chat, and listing details. Those profile/chat details and the job snippets are sent to that provider when you request recommendations. Recommendations are stored in browser local storage; choose **Save to my jobs** to add one to your tracked jobs. The **Recommended** view is paged, can be ordered by match or date, and can be filtered by place; evaluated match percentages are color-coded.
 
 Job-board data can be incomplete, delayed, or out of date. Check the original listing for current availability and application details; a recommendation is not a guarantee that a role is still open or a fit.
 
 ## LinkedIn job-alert emails
 
-JobFinder can import leads from a LinkedIn job-alert email that you explicitly paste or load from a local `.eml`/text file. The file is read in your browser; only the email text you choose to import is sent to the selected AI provider for extraction, and the server does not retain it. Imported leads appear in **Recommended** with a Google Jobs search and a company-careers search link, so you can verify the role on permitted sources and save it like any other job.
+JobFinder can import leads from a LinkedIn job-alert email that you explicitly paste or load from a local `.eml`/text file. Dropping or selecting a supported local file starts extraction immediately when an AI provider is configured; pasted text is sent only after you select **Import leads**. The file is read in your browser; only the email text you choose to import is sent to the selected AI provider for extraction, and the server does not retain it. JobFinder then sends only each extracted title, company, and location to Jobicy and any configured Adzuna or Jooble API; it never forwards the raw email to them. To respect source rate limits, it checks at most the first five clear leads in one import. An original LinkedIn job URL found in a supported alert is kept for the imported lead; possible live equivalents appear in **Recommended** alongside the imported leads, with source attribution and original-listing links for review. Alert-derived leads are not assigned a match percentage unless an AI matching pass evaluates them.
 
-This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your email, fetch alert emails, scrape LinkedIn, or automatically crawl company websites. Remove private material from an email before importing if you do not want the provider to receive it.
+This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your email, fetch alert emails, scrape LinkedIn, or automatically crawl company websites. A possible live equivalent is not proof that the original alert role is still available; check the original listing before applying. Remove private material from an email before importing if you do not want the provider to receive it.
 
 ## Other job-search tools
 
 - Saves your job-search preferences and resume text (including LaTeX source) in the browser's local storage.
 - Lets you open LinkedIn, Indeed, and Google Jobs searches based on your preferred role and location. These are ordinary search links opened for you to review manually, not sources used by **Find more jobs**.
 - Saves job links, descriptions, and notes locally, with application status tracking.
+- Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.
 - Drafts, copies, or downloads a cover letter using OpenAI, Gemini, or Anthropic. The selected provider receives the profile and job description when you request a draft.
 
 Job discovery is intentionally limited to the public APIs described above. JobFinder does not log into, crawl, or scrape LinkedIn, Indeed, or other job boards. It does not automate applications; open the original listing and review/apply there yourself. Resume upload reads `.txt`, `.md`, and `.tex` files as text; paste text from other resume formats.
