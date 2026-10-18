@@ -3,7 +3,7 @@
   import { SvelteSet } from 'svelte/reactivity';
 
   type Provider = 'openai' | 'gemini' | 'anthropic';
-  type ProviderState = { configured: boolean; source: 'saved' | 'environment' | 'none' };
+  type ProviderState = { configured: boolean; source: 'saved' | 'none' };
   type JobStatus = 'Saved' | 'Applying' | 'Applied' | 'Interviewing' | 'Archived';
   type Job = {
     id: string;
@@ -133,7 +133,7 @@
   let generatingLetter = false;
   let settingsStorageWarning = false;
   let settingsStorageMessage =
-    'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again. Server environment keys can still be used.';
+    'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again.';
   let providerSettings: Record<Provider, ProviderState> = {
     openai: { configured: false, source: 'none' },
     gemini: { configured: false, source: 'none' },
@@ -168,7 +168,42 @@
 
   onMount(() => {
     void refreshProviderSettings();
+    void loadSavedProfile();
   });
+
+  function hasProfileDetails(value: Profile): boolean {
+    return Object.values(value).some(Boolean);
+  }
+
+  async function saveProfileToServer(value: Profile): Promise<void> {
+    const response = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: value }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not save the profile.');
+  }
+
+  async function loadSavedProfile(): Promise<void> {
+    try {
+      const response = await fetch('/api/profile');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not load the saved profile.');
+      const savedProfile = { ...emptyProfile, ...(data.profile as Partial<Profile>) };
+      if (hasProfileDetails(savedProfile)) {
+        profile = savedProfile;
+        localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+        onboardingStep = 4;
+        localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
+        if (view === 'onboarding') view = 'dashboard';
+      } else if (hasProfileDetails(profile)) {
+        await saveProfileToServer(profile);
+      }
+    } catch (error) {
+      profileStatus = `${errorMessage(error, 'Could not load the saved profile.')} Your browser copy is still available.`;
+    }
+  }
 
   function persistJobs() {
     localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
@@ -184,6 +219,16 @@
     onboardingStep = 4;
     localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
     setView('dashboard');
+  }
+
+  async function continueFromResume(): Promise<void> {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    try {
+      await saveProfileToServer(profile);
+    } catch {
+      // The explicit profile form will show a retryable error if the server remains unavailable.
+    }
+    advanceOnboarding(2);
   }
 
   function advanceOnboarding(step: number): void {
@@ -297,9 +342,7 @@
       if (!response.ok) throw new Error(settingsResponseError(response, data));
       providerStatuses = {
         ...providerStatuses,
-        [provider]: data.environmentConfigured
-          ? 'Saved key removed. The server environment key is still active.'
-          : 'Saved key removed.',
+        [provider]: 'Saved key removed.',
       };
       await refreshProviderSettings();
     } catch (error) {
@@ -410,6 +453,7 @@
       skills: [profile.skills.trim(), skill].filter(Boolean).join(', '),
     };
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    void saveProfileToServer(profile).catch(() => {});
     discoveredSkills = discoveredSkills.filter((entry) => entry !== skill);
   }
 
@@ -612,10 +656,15 @@
     suggestionsStatus = 'Job hidden. It will not be suggested again from the same listing.';
   }
 
-  function saveProfile(event: SubmitEvent): void {
+  async function saveProfile(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-    profileStatus = 'Saved — your search is taking shape.';
+    try {
+      await saveProfileToServer(profile);
+      profileStatus = 'Saved on this JobFinder server.';
+    } catch (error) {
+      profileStatus = `${errorMessage(error, 'Could not save the profile.')} Your browser copy was saved locally.`;
+    }
   }
 
   function errorMessage(error: unknown, fallback: string): string {
@@ -1014,7 +1063,7 @@
       <div class="privacy-card">
         <span class="privacy-icon" aria-hidden="true">✳</span>
         <strong>Your search, your data</strong>
-        <p>Your profile and saved jobs stay in this browser.</p>
+        <p>Your profile is saved on this JobFinder server.</p>
       </div>
       <div class="sidebar-foot">A calmer way to find what’s next.</div>
     </div>
@@ -1140,10 +1189,7 @@
                 ><button
                   class="button button-dark"
                   type="button"
-                  onclick={() => {
-                    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-                    advanceOnboarding(2);
-                  }}>Continue to recruiter →</button
+                  onclick={continueFromResume}>Continue to recruiter →</button
                 >
               </div>
             {:else if onboardingStep === 2}
@@ -1335,9 +1381,9 @@
           <div class="form-note">
             <span aria-hidden="true">✳</span>
             <div>
-              <strong>Your profile stays in this browser.</strong> When you choose AI autofill or draft
-              a letter, the text you submit is sent to the selected provider. Your API key stays on the
-              server; review extracted details before saving.
+              <strong>Your profile is saved on this JobFinder server.</strong> When you choose AI autofill
+              or draft a letter, the text you submit is sent to the selected provider. Your API key stays
+              on the server; review extracted details before saving.
             </div>
           </div>
           <form class="profile-form" id="profile-form" onsubmit={saveProfile}>
@@ -2063,11 +2109,9 @@
                       {providerStatuses[provider] ||
                         (providerSettings[provider].source === 'saved'
                           ? 'A key is already saved for this provider. Remove it to add a different one.'
-                          : providerSettings[provider].source === 'environment'
-                            ? `A key is already set through ${provider.toUpperCase()}_API_KEY on the server. Change it there and restart.`
-                            : providerSettings[provider].configured === false
-                              ? 'No key configured.'
-                              : 'Checking key status…')}
+                          : providerSettings[provider].configured === false
+                            ? 'No key configured.'
+                            : 'Checking key status…')}
                     </p>
                   </div>
                 </div>

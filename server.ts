@@ -21,13 +21,25 @@ type ProviderKeyStore = {
   get(provider: Provider): Promise<string | null>;
   status(): Promise<{
     storageError: boolean;
-    providers: Record<Provider, { configured: boolean; source: 'saved' | 'environment' | 'none' }>;
+    providers: Record<Provider, { configured: boolean; source: 'saved' | 'none' }>;
   }>;
-  setIfUnconfigured(
-    provider: Provider,
-    key: string,
-  ): Promise<'saved' | 'environment' | 'already-saved'>;
+  setIfUnconfigured(provider: Provider, key: string): Promise<'saved' | 'already-saved'>;
   remove(provider: Provider): Promise<void>;
+};
+type Profile = {
+  name: string;
+  linkedin: string;
+  roles: string;
+  location: string;
+  workStyle: string;
+  skills: string;
+  priorities: string;
+  experience: string;
+  resume: string;
+};
+type ProfileStore = {
+  get(): Promise<Profile>;
+  save(profile: Profile): Promise<void>;
 };
 type ProviderResponse = {
   choices?: { message?: { content?: unknown } }[];
@@ -35,19 +47,43 @@ type ProviderResponse = {
   content?: { type?: unknown; text?: unknown }[];
 };
 const providers = new Set<Provider>(['openai', 'gemini', 'anthropic']);
-const keyNames: Record<Provider, string> = {
-  openai: 'OPENAI_API_KEY',
-  gemini: 'GEMINI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-};
 const keyStoreRecoveryMessage =
   'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
+const emptyProfile: Profile = {
+  name: '',
+  linkedin: '',
+  roles: '',
+  location: '',
+  workStyle: '',
+  skills: '',
+  priorities: '',
+  experience: '',
+  resume: '',
+};
 const mimeTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+
+function loadEnvironmentFile(filePath: string): void {
+  try {
+    const contents = fs.readFileSync(filePath, 'utf8');
+    for (const line of contents.split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!match) continue;
+      const [, name, rawValue] = match;
+      if (!name || rawValue === undefined || process.env[name] !== undefined) continue;
+      const value = rawValue.match(/^(['"])(.*)\1$/)?.[2] ?? rawValue;
+      process.env[name] = value;
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || (error as ApiError).code !== 'ENOENT') throw error;
+  }
+}
+
+loadEnvironmentFile(path.join(rootDirectory, '.env'));
 
 function errorCode(error: unknown): string | undefined {
   return error instanceof Error && typeof (error as ApiError).code === 'string'
@@ -195,9 +231,7 @@ async function getProviderKey(
     return null;
   }
   if (key) return key;
-  sendJson(response, 503, {
-    error: `Add a key in API settings or configure ${keyNames[provider]} on the server.`,
-  });
+  sendJson(response, 503, { error: 'Add a key in API settings.' });
   return null;
 }
 
@@ -366,12 +400,12 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
     async get(provider: Provider): Promise<string | null> {
       try {
         const keys = await getStoredKeys();
-        return keys[provider] || process.env[keyNames[provider]] || null;
+        return keys[provider] || null;
       } catch (error) {
         console.error(
           `Encrypted API key lookup failed (${error instanceof Error ? (error as ApiError).code || error.name : 'Error'})`,
         );
-        return process.env[keyNames[provider]] || null;
+        return null;
       }
     },
     async status(): ReturnType<ProviderKeyStore['status']> {
@@ -391,12 +425,8 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
           [...providers].map((provider) => [
             provider,
             {
-              configured: Boolean(keys[provider] || process.env[keyNames[provider]]),
-              source: keys[provider]
-                ? 'saved'
-                : process.env[keyNames[provider]]
-                  ? 'environment'
-                  : 'none',
+              configured: Boolean(keys[provider]),
+              source: keys[provider] ? 'saved' : 'none',
             },
           ]),
         ) as Awaited<ReturnType<ProviderKeyStore['status']>>['providers'],
@@ -405,9 +435,8 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
     async setIfUnconfigured(
       provider: Provider,
       key: string,
-    ): Promise<'saved' | 'environment' | 'already-saved'> {
+    ): Promise<'saved' | 'already-saved'> {
       return serializeWrite(async () => {
-        if (process.env[keyNames[provider]]) return 'environment';
         const keys = { ...(await getStoredKeys()) };
         if (keys[provider]) return 'already-saved';
         keys[provider] = key;
@@ -425,6 +454,69 @@ function createProviderKeyStore(dataDirectory: string): ProviderKeyStore {
         storedKeysCache = keys;
         storedKeysPromise = Promise.resolve(keys);
       });
+    },
+  };
+}
+
+function profileFrom(value: unknown): Profile {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? (value as RequestData) : {};
+  return {
+    name: text(data.name, 1_000),
+    linkedin: text(data.linkedin, 500),
+    roles: text(data.roles, 500),
+    location: text(data.location, 300),
+    workStyle: text(data.workStyle, 100),
+    skills: text(data.skills, 1_000),
+    priorities: text(data.priorities, 1_000),
+    experience: text(data.experience, 2_000),
+    resume: text(data.resume, 20_000),
+  };
+}
+
+function createProfileStore(dataDirectory: string): ProfileStore {
+  const profilePath = path.join(dataDirectory, 'profile.json');
+  let writeQueue = Promise.resolve();
+
+  async function ensureDirectory(): Promise<void> {
+    await fsPromises.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+    await fsPromises.chmod(dataDirectory, 0o700);
+  }
+
+  return {
+    async get(): Promise<Profile> {
+      try {
+        return profileFrom(JSON.parse(await fsPromises.readFile(profilePath, 'utf8')));
+      } catch (error) {
+        if (error instanceof Error && (error as ApiError).code === 'ENOENT') return { ...emptyProfile };
+        throw error;
+      }
+    },
+    async save(profile: Profile): Promise<void> {
+      const operation = writeQueue.then(async () => {
+        await ensureDirectory();
+        const temporaryPath = path.join(
+          dataDirectory,
+          `.profile-${crypto.randomBytes(8).toString('hex')}.tmp`,
+        );
+        let handle;
+        try {
+          handle = await fsPromises.open(temporaryPath, 'wx', 0o600);
+          await handle.writeFile(JSON.stringify(profile), 'utf8');
+          await handle.sync();
+          await handle.close();
+          handle = null;
+          await fsPromises.rename(temporaryPath, profilePath);
+          await fsPromises.chmod(profilePath, 0o600);
+        } finally {
+          await handle?.close().catch(() => {});
+          await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
+        }
+      });
+      writeQueue = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      await operation;
     },
   };
 }
@@ -504,9 +596,7 @@ async function handleSettings(
       }
       sendJson(response, 409, {
         error:
-          result === 'environment'
-            ? `A key is already configured through ${keyNames[provider]} on the server.`
-            : 'A key is already saved for this provider. Remove it before adding another.',
+          'A key is already saved for this provider. Remove it before adding another.',
       });
     } catch (error) {
       const code = errorCode(error);
@@ -528,7 +618,6 @@ async function handleSettings(
     sendJson(response, 200, {
       removed: true,
       provider,
-      environmentConfigured: Boolean(process.env[keyNames[provider]]),
     });
   } catch (error) {
     const code = errorCode(error);
@@ -539,6 +628,44 @@ async function handleSettings(
           ? keyStoreRecoveryMessage
           : 'Could not remove the saved API key.',
     });
+  }
+}
+
+async function handleProfile(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  profileStore: ProfileStore,
+): Promise<void> {
+  if (request.method === 'GET') {
+    try {
+      sendJson(response, 200, { profile: await profileStore.get() });
+    } catch (error) {
+      console.error(`Profile read failed (${errorCode(error) || errorName(error)})`);
+      sendJson(response, 500, { error: 'Could not read the saved profile.' });
+    }
+    return;
+  }
+  if (request.method !== 'PUT') {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return;
+  }
+  if (!isSameOrigin(request)) {
+    sendJson(response, 403, { error: 'Profile changes must come from this JobFinder page.' });
+    return;
+  }
+  const data = await readRequestData(request, response);
+  if (!data) return;
+  if (!data.profile || typeof data.profile !== 'object' || Array.isArray(data.profile)) {
+    sendJson(response, 400, { error: 'Send a valid profile.' });
+    return;
+  }
+  try {
+    const profile = profileFrom(data.profile);
+    await profileStore.save(profile);
+    sendJson(response, 200, { profile });
+  } catch (error) {
+    console.error(`Profile save failed (${errorCode(error) || errorName(error)})`);
+    sendJson(response, 500, { error: 'Could not save the profile.' });
   }
 }
 
@@ -1472,8 +1599,9 @@ function createServer(options: { dataDirectory?: string } = {}): http.Server {
   const dataDirectory =
     options.dataDirectory || process.env.JOBFINDER_DATA_DIR || path.join(rootDirectory, '.data');
   const keyStore = createProviderKeyStore(dataDirectory);
+  const profileStore = createProfileStore(dataDirectory);
   return http.createServer((request, response) => {
-    void handleRequest(request, response, keyStore).catch((error: unknown) => {
+    void handleRequest(request, response, keyStore, profileStore).catch((error: unknown) => {
       console.error(`Request failed (${errorName(error)})`);
       if (response.headersSent) {
         response.destroy();
@@ -1488,6 +1616,7 @@ async function handleRequest(
   request: http.IncomingMessage,
   response: http.ServerResponse,
   keyStore: ProviderKeyStore,
+  profileStore: ProfileStore,
 ): Promise<void> {
   let url;
   try {
@@ -1500,6 +1629,11 @@ async function handleRequest(
 
   if (pathname.startsWith('/api/') && !hasLoopbackHost(request)) {
     sendJson(response, 403, { error: 'JobFinder API access is limited to localhost.' });
+    return;
+  }
+
+  if (pathname === '/api/profile') {
+    await handleProfile(request, response, profileStore);
     return;
   }
 

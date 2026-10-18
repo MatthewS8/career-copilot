@@ -20,35 +20,25 @@ Run `npm run lint` to apply the strict ESLint rules, `npm run check` to type-che
 
 Open **API settings** in the app to enter an OpenAI, Gemini, or Anthropic key. The selected provider powers resume autofill, recruiter chat, job matching, and cover-letter drafts. Keys are stored only on the server, encrypted at rest with AES-256-GCM, and never returned to the browser after saving. The server creates a random encryption key and stores it in `.data/key-encryption.key`; encrypted provider keys are saved in `.data/provider-keys.enc`. The data directory is restricted to the current OS user, and both files use owner-only permissions. Back up both files together if you need to retain saved provider keys. Deleting the encryption key makes saved keys unrecoverable.
 
-Alternatively, configure a provider key in the server environment and restart JobFinder:
+AI provider keys are configured only in **API settings**. The server encrypts them at rest; they are never read from environment variables. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. Set `JOBFINDER_DATA_DIR` to choose another private directory for the encryption and encrypted-key files.
+
+Optional live-job verification for imported alerts is configured through a local `.env` file. Copy `.env.example` to `.env`, enter your private source credentials, then restart JobFinder:
 
 ```sh
-OPENAI_API_KEY=your-key npm start
+cp .env.example .env
 ```
 
-Supported environment variables are `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `ANTHROPIC_API_KEY`. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. A key saved in API settings takes precedence over that provider's environment key; removing the saved key falls back to the environment key. Set `JOBFINDER_DATA_DIR` to choose another private directory for the encryption and encrypted-key files.
-
-Optional live-job verification for imported alerts is configured only in the server environment:
-
-```sh
-read -r -p 'Adzuna app ID: ' ADZUNA_APP_ID
-read -r -s -p 'Adzuna app key: ' ADZUNA_APP_KEY; printf '\n'
-read -r -s -p 'Jooble API-key JSON: ' JOOBLE_API_KEYS; printf '\n'
-export ADZUNA_APP_ID ADZUNA_APP_KEY JOOBLE_API_KEYS
-ADZUNA_COUNTRIES=it,de,fr npm start
-```
-
-`ADZUNA_COUNTRIES` is a comma-separated list of Adzuna two-letter country codes to query. Jooble requires a separate key for every country domain, supplied in the `JOOBLE_API_KEYS` JSON map. Keep these values out of source control, browser storage, and shell history. Jobicy needs no key.
+Set `ADZUNA_COUNTRIES` to a comma-separated list of Adzuna two-letter country codes. Jooble requires a separate key for every country domain, supplied in the quoted `JOOBLE_API_KEYS` JSON map. Keep `.env` out of source control, browser storage, and chat. Jobicy needs no key.
 
 Before configuring a source, review and accept its current terms. JobFinder preserves visible source attribution and original-listing links for Jobicy, Adzuna, and Jooble results; it does not guarantee that a source result is still open or equivalent to an alert lead. Jooble's free allocation is limited, so configure only the countries you genuinely intend to search.
 
-Encryption protects the API keys at rest from someone who can read only the encrypted-key file. The JobFinder server must be able to read both files to use your key, so it cannot protect against someone with access to your OS account or server process. If the encrypted file is damaged and there is no backup, remove `.data/provider-keys.enc` to discard saved keys and try again; keep `key-encryption.key`. Restart JobFinder after restoring files from backup. JobFinder has no sign-in or multi-user protection: keep it bound to localhost by default and do not expose it to an untrusted network. All API endpoints accept requests only when the HTTP Host is a localhost address.
+Encryption protects the API keys at rest from someone who can read only the encrypted-key file. The JobFinder server must be able to read both files to use your key, so it cannot protect against someone with access to your OS account or server process. If the encrypted file is damaged and there is no backup, remove `.data/provider-keys.enc` to discard saved keys and try again; keep `key-encryption.key`. Restart JobFinder after restoring files from backup. The saved profile is stored unencrypted in `.data/profile.json`, readable only by the server's OS user. JobFinder has no sign-in or multi-user protection: keep it bound to localhost by default and do not expose it to an untrusted network. All API endpoints accept requests only when the HTTP Host is a localhost address.
 
 ## Autofill your profile
 
-Upload a `.txt`, `.md`, or LaTeX `.tex` resume (or paste its text/source), choose a configured AI provider, and select **Autofill from resume**. LaTeX source is read as text; it is not compiled or rendered. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill. Resume text is saved with your profile in browser storage when you save; copied LinkedIn text is only used for the extraction request and is not saved.
+Upload a `.txt`, `.md`, or LaTeX `.tex` resume (or paste its text/source), choose a configured AI provider, and select **Autofill from resume**. LaTeX source is read as text; it is not compiled or rendered. You can also paste text copied from your LinkedIn profile and autofill from that. Extracted values fill empty fields only; review them and save your profile yourself. The source text is sent to the selected AI provider when you click autofill. When you save, the profile and resume text are stored on the JobFinder server; copied LinkedIn text is only used for the extraction request and is not saved.
 
-A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to profile content. The URL is saved in your browser, but JobFinder does not fetch or scrape LinkedIn. Open your profile and paste the details you want to use.
+A LinkedIn profile URL alone cannot be imported: LinkedIn restricts access to profile content. The URL is saved with your server-side profile, but JobFinder does not fetch or scrape LinkedIn. Open your profile and paste the details you want to use.
 
 ## Recruiter and job recommendations
 
@@ -68,7 +58,7 @@ This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your
 
 ## Other job-search tools
 
-- Saves your job-search preferences and resume text (including LaTeX source) in the browser's local storage.
+- Saves your profile and resume text (including LaTeX source) on the JobFinder server; saved jobs, recommendations, and preferences remain in browser local storage.
 - Lets you open LinkedIn, Indeed, and Google Jobs searches based on your preferred role and location. These are ordinary search links opened for you to review manually, not sources used by **Find more jobs**.
 - Saves job links, descriptions, and notes locally, with application status tracking.
 - Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.

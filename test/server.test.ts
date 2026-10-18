@@ -12,7 +12,6 @@ type JsonBody = {
   saved: boolean;
   provider: string;
   removed: boolean;
-  environmentConfigured: boolean;
   storageError: boolean;
   providers: Record<string, { configured: boolean; source: string }>;
   profile: Record<string, string> & { name: string };
@@ -22,7 +21,6 @@ type MockRequestOptions = { headers: Headers; body: string };
 type CapturedRequest = { url: string; options: MockRequestOptions };
 type ProviderConfiguration = {
   provider: 'gemini' | 'anthropic';
-  keyName: 'GEMINI_API_KEY' | 'ANTHROPIC_API_KEY';
   url: string;
   response: (profileText: string) => unknown;
   checkRequest: (request: CapturedRequest) => void;
@@ -52,6 +50,19 @@ function mockFetch(
       headers: new Headers(init?.headers),
       body: typeof init?.body === 'string' ? init.body : '',
     });
+}
+
+async function configureProvider(provider: 'openai' | 'gemini' | 'anthropic', key = 'test-key') {
+  await fetch(`${baseUrl}/api/settings/provider-key?provider=${provider}`, {
+    method: 'DELETE',
+    headers: { origin: baseUrl },
+  });
+  const response = await fetch(`${baseUrl}/api/settings/provider-key`, {
+    method: 'POST',
+    headers: { origin: baseUrl, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider, key }),
+  });
+  assert.equal(response.status, 200);
 }
 
 before(async () => {
@@ -89,23 +100,49 @@ test('serves the app with security headers', async () => {
   assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
 });
 
-test('reports API key configuration status without returning any key', async () => {
-  const oldKey = process.env.GEMINI_API_KEY;
-  const oldOpenAiKey = process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_API_KEY;
+test('stores a profile on the server for subsequent clients', async () => {
+  const profile = {
+    name: 'Jamie Lee',
+    linkedin: 'https://www.linkedin.com/in/jamie-lee',
+    roles: 'Software Engineer',
+    location: 'Rome, Italy',
+    workStyle: 'Remote',
+    skills: 'TypeScript, Svelte',
+    priorities: 'Flexible hours',
+    experience: 'Built web applications.',
+    resume: 'Jamie Lee resume text',
+  };
+  const saveResponse = await fetch(`${baseUrl}/api/profile`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', origin: baseUrl },
+    body: JSON.stringify({ profile }),
+  });
+  assert.equal(saveResponse.status, 200);
+  assert.deepEqual((await responseJson(saveResponse)).profile, profile);
+
+  const savedResponse = await fetch(`${baseUrl}/api/profile`);
+  assert.equal(savedResponse.status, 200);
+  assert.deepEqual((await responseJson(savedResponse)).profile, profile);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dataDirectory, 'profile.json'), 'utf8')), profile);
+});
+
+test('rejects profile updates that are not from the JobFinder origin', async () => {
+  const response = await fetch(`${baseUrl}/api/profile`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', origin: 'https://attacker.example' },
+    body: JSON.stringify({ profile: { name: 'Attacker' } }),
+  });
+  assert.equal(response.status, 403);
+});
+
+test('ignores AI provider environment variables', async () => {
   process.env.GEMINI_API_KEY = 'environment-key-secret';
-  try {
-    const response = await fetch(`${baseUrl}/api/settings`);
-    assert.equal(response.status, 200);
-    const body = await responseJson(response);
-    assert.deepEqual(body.providers.gemini, { configured: true, source: 'environment' });
-    assert.deepEqual(body.providers.openai, { configured: false, source: 'none' });
-    assert.doesNotMatch(JSON.stringify(body), /environment-key-secret/);
-  } finally {
-    if (oldKey === undefined) delete process.env.GEMINI_API_KEY;
-    else process.env.GEMINI_API_KEY = oldKey;
-    if (oldOpenAiKey !== undefined) process.env.OPENAI_API_KEY = oldOpenAiKey;
-  }
+  const response = await fetch(`${baseUrl}/api/settings`);
+  assert.equal(response.status, 200);
+  const body = await responseJson(response);
+  assert.deepEqual(body.providers.gemini, { configured: false, source: 'none' });
+  assert.doesNotMatch(JSON.stringify(body), /environment-key-secret/);
+  delete process.env.GEMINI_API_KEY;
 });
 
 test('saves provider keys encrypted and uses/removes saved keys server-side', async () => {
@@ -169,7 +206,6 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
     assert.equal(letterResponse.status, 200);
     assert.equal(providerAuthorization, ['Bearer', secret].join(' '));
 
-    process.env.OPENAI_API_KEY = 'environment-fallback-key';
     const removeResponse = await originalFetch(
       `${baseUrl}/api/settings/provider-key?provider=openai`,
       {
@@ -180,25 +216,16 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
     assert.deepEqual(await responseJson(removeResponse), {
       removed: true,
       provider: 'openai',
-      environmentConfigured: true,
     });
     assert.deepEqual(
       (await responseJson(await originalFetch(`${baseUrl}/api/settings`))).providers.openai,
-      {
-        configured: true,
-        source: 'environment',
-      },
+      { configured: false, source: 'none' },
     );
-    const fallbackResponse = await originalFetch(`${baseUrl}/api/cover-letter`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        provider: 'openai',
-        job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
-      }),
+    const missingKeyResponse = await originalFetch(`${baseUrl}/api/cover-letter`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', job: { title: 'Designer', company: 'Example', description: 'Design useful products.' } }),
     });
-    assert.equal(fallbackResponse.status, 200);
-    assert.equal(providerAuthorization, ['Bearer', 'environment-fallback-key'].join(' '));
+    assert.equal(missingKeyResponse.status, 503);
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -303,7 +330,7 @@ test('rejects cross-origin API key changes', async () => {
   assert.equal(reboundProviderRequest, 403);
 });
 
-test('falls back to environment keys and reports recovery guidance when encrypted storage is damaged', async () => {
+test('reports recovery guidance when encrypted storage is damaged', async () => {
   const damagedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-damaged-'));
   const damagedServer = createServer({ dataDirectory: damagedDirectory });
   await fs.writeFile(path.join(damagedDirectory, 'key-encryption.key'), Buffer.alloc(32, 1), {
@@ -316,21 +343,10 @@ test('falls back to environment keys and reports recovery guidance when encrypte
     damagedServer.listen({ port: 0, host: '127.0.0.1' }, resolve),
   );
   const damagedUrl = `http://127.0.0.1:${serverPort(damagedServer).toString()}`;
-  const oldKey = process.env.OPENAI_API_KEY;
-  const originalFetch = global.fetch;
   const originalConsoleError = console.error;
-  process.env.OPENAI_API_KEY = 'environment-fallback-key';
-  let providerAuthorization: string | null = null;
-  mockFetch(async (_url, options) => {
-    providerAuthorization = options.headers.get('authorization');
-    return new Response(JSON.stringify({ choices: [{ message: { content: 'Draft letter' } }] }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  });
   console.error = () => {};
   try {
-    const response = await originalFetch(`${damagedUrl}/api/cover-letter`, {
+    const response = await fetch(`${damagedUrl}/api/cover-letter`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -338,16 +354,14 @@ test('falls back to environment keys and reports recovery guidance when encrypte
         job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
       }),
     });
-    assert.equal(response.status, 200);
-    assert.equal(providerAuthorization, ['Bearer', 'environment-fallback-key'].join(' '));
+    assert.equal(response.status, 503);
 
-    const settingsResponse = await originalFetch(`${damagedUrl}/api/settings`);
+    const settingsResponse = await fetch(`${damagedUrl}/api/settings`);
     const settings = await responseJson(settingsResponse);
     assert.equal(settings.storageError, true);
-    assert.deepEqual(settings.providers.openai, { configured: true, source: 'environment' });
+    assert.deepEqual(settings.providers.openai, { configured: false, source: 'none' });
 
-    delete process.env.OPENAI_API_KEY;
-    const saveResponse = await originalFetch(`${damagedUrl}/api/settings/provider-key`, {
+    const saveResponse = await fetch(`${damagedUrl}/api/settings/provider-key`, {
       method: 'POST',
       headers: { origin: damagedUrl, 'content-type': 'application/json' },
       body: JSON.stringify({ provider: 'openai', key: 'new-key' }),
@@ -356,24 +370,21 @@ test('falls back to environment keys and reports recovery guidance when encrypte
     assert.match((await responseJson(saveResponse)).error, /remove provider-keys\.enc/);
 
     await fs.rm(path.join(damagedDirectory, 'provider-keys.enc'));
-    const resetResponse = await originalFetch(`${damagedUrl}/api/settings/provider-key`, {
+    const resetResponse = await fetch(`${damagedUrl}/api/settings/provider-key`, {
       method: 'POST',
       headers: { origin: damagedUrl, 'content-type': 'application/json' },
       body: JSON.stringify({ provider: 'openai', key: 'reset-key' }),
     });
     assert.equal(resetResponse.status, 200);
     assert.deepEqual(
-      (await responseJson(await originalFetch(`${damagedUrl}/api/settings`))).providers.openai,
+      (await responseJson(await fetch(`${damagedUrl}/api/settings`))).providers.openai,
       {
         configured: true,
         source: 'saved',
       },
     );
   } finally {
-    global.fetch = originalFetch;
     console.error = originalConsoleError;
-    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = oldKey;
     await new Promise((resolve) => damagedServer.close(resolve));
     await fs.rm(damagedDirectory, { recursive: true, force: true });
   }
@@ -410,7 +421,7 @@ test('returns a clear error when the selected provider key is not configured', a
       }),
     });
     assert.equal(response.status, 503);
-    assert.match((await responseJson(response)).error, /OPENAI_API_KEY/);
+    assert.match((await responseJson(response)).error, /API settings/);
   } finally {
     if (oldKey !== undefined) process.env.OPENAI_API_KEY = oldKey;
   }
@@ -419,7 +430,7 @@ test('returns a clear error when the selected provider key is not configured', a
 test('sends a cover-letter prompt to the selected provider', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'test-key';
+  await configureProvider('openai');
   let outboundRequest: CapturedRequest | undefined;
   mockFetch(async (url, options) => {
     outboundRequest = { url, options };
@@ -489,7 +500,7 @@ test('returns a clear error when the extraction provider key is not configured',
       body: JSON.stringify({ provider: 'gemini', source: 'resume', content: 'Resume text' }),
     });
     assert.equal(response.status, 503);
-    assert.match((await responseJson(response)).error, /GEMINI_API_KEY/);
+    assert.match((await responseJson(response)).error, /API settings/);
   } finally {
     if (oldKey !== undefined) process.env.GEMINI_API_KEY = oldKey;
   }
@@ -498,7 +509,7 @@ test('returns a clear error when the extraction provider key is not configured',
 test('extracts only supported profile fields through the configured provider', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'test-key';
+  await configureProvider('openai');
   let outboundRequest: CapturedRequest | undefined;
   mockFetch(async (url, options) => {
     outboundRequest = { url, options };
@@ -572,7 +583,7 @@ test('extracts only supported profile fields through the configured provider', a
 test('parses a complete long provider response before limiting field values', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'test-key';
+  await configureProvider('openai');
   mockFetch(
     async () =>
       new Response(
@@ -600,7 +611,6 @@ test('parses a complete long provider response before limiting field values', as
 for (const configuration of [
   {
     provider: 'gemini',
-    keyName: 'GEMINI_API_KEY',
     url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
     response: (profileText: string) => ({
       candidates: [{ content: { parts: [{ text: profileText }] } }],
@@ -616,7 +626,6 @@ for (const configuration of [
   },
   {
     provider: 'anthropic',
-    keyName: 'ANTHROPIC_API_KEY',
     url: 'https://api.anthropic.com/v1/messages',
     response: (profileText: string) => ({ content: [{ type: 'text', text: profileText }] }),
     checkRequest: (request: CapturedRequest) => {
@@ -629,9 +638,8 @@ for (const configuration of [
   },
 ] satisfies ProviderConfiguration[]) {
   test(`extracts profile fields through ${configuration.provider}`, async () => {
-    const oldKey = process.env[configuration.keyName];
     const originalFetch = global.fetch;
-    process.env[configuration.keyName] = 'test-key';
+    await configureProvider(configuration.provider);
     let outboundRequest: CapturedRequest | undefined;
     mockFetch(async (url, options) => {
       outboundRequest = { url, options };
@@ -657,8 +665,6 @@ for (const configuration of [
       configuration.checkRequest(outboundRequest);
     } finally {
       global.fetch = originalFetch;
-      if (oldKey === undefined) Reflect.deleteProperty(process.env, configuration.keyName);
-      else process.env[configuration.keyName] = oldKey;
     }
   });
 }
@@ -666,7 +672,7 @@ for (const configuration of [
 test('rejects malformed profile extraction output', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'test-key';
+  await configureProvider('openai');
   mockFetch(
     async () =>
       new Response(
@@ -695,7 +701,7 @@ test('logs provider failure status without logging provider content', async () =
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
   const originalConsoleError = console.error;
-  process.env.OPENAI_API_KEY = 'test-key';
+  await configureProvider('openai');
   let loggedMessage = '';
   mockFetch(async () => new Response('Sensitive provider response', { status: 429 }));
   console.error = (message: unknown) => {
@@ -740,27 +746,21 @@ test('blocks requests to paths outside the built frontend directory', async () =
   assert.equal(response.status, 404);
 });
 
-test('rejects saving a key when the server environment already provides one', async () => {
-  const oldKey = process.env.ANTHROPIC_API_KEY;
-  process.env.ANTHROPIC_API_KEY = 'environment-key';
-  try {
-    const response = await fetch(`${baseUrl}/api/settings/provider-key`, {
-      method: 'POST',
-      headers: { origin: baseUrl, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'anthropic', key: 'another-key' }),
-    });
-    assert.equal(response.status, 409);
-    assert.match((await responseJson(response)).error, /ANTHROPIC_API_KEY/);
-  } finally {
-    if (oldKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = oldKey;
-  }
+test('rejects saving a second website key for the same provider', async () => {
+  await configureProvider('anthropic');
+  const response = await fetch(`${baseUrl}/api/settings/provider-key`, {
+    method: 'POST',
+    headers: { origin: baseUrl, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'anthropic', key: 'another-key' }),
+  });
+  assert.equal(response.status, 409);
+  assert.match((await responseJson(response)).error, /already saved/);
 });
 
 test('recruiter chat returns a reply and newly spotted skills', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-key';
+  await configureProvider('openai', 'environment-key');
   let prompt = '';
   mockFetch((_url, options) => {
     const body = JSON.parse(options.body) as { messages: { content: string }[] };
@@ -818,7 +818,7 @@ test('recruiter chat returns a reply and newly spotted skills', async () => {
 test('imports user-provided LinkedIn alert email leads without fetching LinkedIn', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-key';
+  await configureProvider('openai', 'environment-key');
   let providerPrompt = '';
   mockFetch((url, options) => {
     if (url.startsWith('https://jobicy.com/')) return new Response(JSON.stringify({ jobs: [] }));
@@ -902,7 +902,7 @@ test('verifies alert leads with configured permitted job APIs without forwarding
   const oldAdzunaCountries = process.env.ADZUNA_COUNTRIES;
   const oldJoobleKeys = process.env.JOOBLE_API_KEYS;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-key';
+  await configureProvider('openai', 'environment-key');
   process.env.ADZUNA_APP_ID = 'adzuna-id';
   process.env.ADZUNA_APP_KEY = 'adzuna-key';
   process.env.ADZUNA_COUNTRIES = 'it';
@@ -1022,7 +1022,7 @@ test('verifies alert leads with configured permitted job APIs without forwarding
 test('finds jobs from public boards and ranks them with the provider', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-key';
+  await configureProvider('openai', 'environment-key');
   const remotiveRequests: string[] = [];
   mockFetch((url) => {
     if (url.startsWith('https://remotive.com/')) {
@@ -1104,7 +1104,7 @@ test('finds jobs from public boards and ranks them with the provider', async () 
 test('keeps matching resilient to partial failures and malformed or unsafe job results', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;
-  process.env.OPENAI_API_KEY = 'environment-key';
+  await configureProvider('openai', 'environment-key');
   let providerPrompt = '';
   let providerInstructions = '';
   mockFetch((url, options) => {

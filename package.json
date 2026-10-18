@@ -7,7 +7,7 @@
     "node": ">=18.18.0"
   },
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host 0.0.0.0",
     "dev:server": "tsc --project tsconfig.server.json && node build/server.js",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --project tsconfig.server.json --noEmit",
     "lint": "eslint .",
