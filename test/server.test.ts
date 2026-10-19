@@ -123,7 +123,10 @@ test('stores a profile on the server for subsequent clients', async () => {
   const savedResponse = await fetch(`${baseUrl}/api/profile`);
   assert.equal(savedResponse.status, 200);
   assert.deepEqual((await responseJson(savedResponse)).profile, profile);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dataDirectory, 'profile.json'), 'utf8')), profile);
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(path.join(dataDirectory, 'profile.json'), 'utf8')),
+    profile,
+  );
 });
 
 test('rejects profile updates that are not from the JobFinder origin', async () => {
@@ -222,8 +225,12 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
       { configured: false, source: 'none' },
     );
     const missingKeyResponse = await originalFetch(`${baseUrl}/api/cover-letter`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'openai', job: { title: 'Designer', company: 'Example', description: 'Design useful products.' } }),
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        job: { title: 'Designer', company: 'Example', description: 'Design useful products.' },
+      }),
     });
     assert.equal(missingKeyResponse.status, 503);
   } finally {
@@ -465,6 +472,115 @@ test('sends a cover-letter prompt to the selected provider', async () => {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('revises a cover letter from a candidate starting letter and feedback', async () => {
+  const originalFetch = global.fetch;
+  await configureProvider('openai');
+  let prompt = '';
+  let instructions = '';
+  mockFetch((_url, options) => {
+    const body = JSON.parse(options.body) as { messages: { content: string }[] };
+    instructions = body.messages[0]?.content ?? '';
+    prompt = body.messages[1]?.content ?? '';
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: 'Dear Example hiring team,\n\nUpdated.' } }],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/cover-letter`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { name: 'Alex', skills: 'Research' },
+        job: { title: 'Designer', company: 'Example', description: 'Make useful products.' },
+        startingLetter: 'Dear team,\n\nI care about useful products.',
+        currentDraft: 'Dear Example hiring team,\n\nI care about useful products.',
+        revisionRequest: 'Make the opening more direct.',
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await responseJson(response), {
+      letter: 'Dear Example hiring team,\n\nUpdated.',
+    });
+    assert.match(prompt, /Candidate's starting letter/);
+    assert.match(prompt, /I care about useful products/);
+    assert.match(prompt, /Make the opening more direct/);
+    assert.match(instructions, /honor the candidate revision request/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('assesses a saved job with a structured, cautious fit result', async () => {
+  const originalFetch = global.fetch;
+  await configureProvider('openai');
+  let prompt = '';
+  let instructions = '';
+  mockFetch((_url, options) => {
+    const body = JSON.parse(options.body) as { messages: { content: string }[] };
+    instructions = body.messages[0]?.content ?? '';
+    prompt = body.messages[1]?.content ?? '';
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                score: 72.4,
+                rationale:
+                  'The stated backend experience aligns with the role, but the listing is brief.',
+                strengths: ['TypeScript experience'],
+                concerns: ['No salary information'],
+                unansweredQuestions: ['What is the team scope?'],
+                nextAction: 'Read the original listing and clarify the team scope.',
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/job-assessment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { roles: 'Backend Engineer', skills: 'TypeScript' },
+        job: { title: 'Platform Engineer', company: 'Example' },
+        messages: [{ role: 'user', content: 'I prefer remote work in Europe.' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await responseJson(response)).assessment, {
+      score: 72,
+      rationale: 'The stated backend experience aligns with the role, but the listing is brief.',
+      strengths: ['TypeScript experience'],
+      concerns: ['No salary information'],
+      unansweredQuestions: ['What is the team scope?'],
+      nextAction: 'Read the original listing and clarify the team scope.',
+    });
+    assert.match(prompt, /Platform Engineer/);
+    assert.match(prompt, /Not provided\. Identify the missing information as uncertainty\./);
+    assert.match(prompt, /I prefer remote work in Europe\./);
+    assert.match(instructions, /Do not invent job requirements/);
+
+    const invalid = await originalFetch(`${baseUrl}/api/job-assessment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', job: { company: 'Example' } }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.match((await responseJson(invalid)).error, /title and company/);
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 
@@ -817,8 +933,16 @@ test('recruiter chat returns a reply and newly spotted skills', async () => {
 
 test('imports user-provided LinkedIn alert email leads without fetching LinkedIn', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
+  const oldAdzunaId = process.env.ADZUNA_APP_ID;
+  const oldAdzunaKey = process.env.ADZUNA_APP_KEY;
+  const oldAdzunaCountries = process.env.ADZUNA_COUNTRIES;
+  const oldJoobleKeys = process.env.JOOBLE_API_KEYS;
   const originalFetch = global.fetch;
   await configureProvider('openai', 'environment-key');
+  delete process.env.ADZUNA_APP_ID;
+  delete process.env.ADZUNA_APP_KEY;
+  delete process.env.ADZUNA_COUNTRIES;
+  delete process.env.JOOBLE_API_KEYS;
   let providerPrompt = '';
   mockFetch((url, options) => {
     if (url.startsWith('https://jobicy.com/')) return new Response(JSON.stringify({ jobs: [] }));
@@ -892,6 +1016,14 @@ test('imports user-provided LinkedIn alert email leads without fetching LinkedIn
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = oldKey;
+    if (oldAdzunaId === undefined) delete process.env.ADZUNA_APP_ID;
+    else process.env.ADZUNA_APP_ID = oldAdzunaId;
+    if (oldAdzunaKey === undefined) delete process.env.ADZUNA_APP_KEY;
+    else process.env.ADZUNA_APP_KEY = oldAdzunaKey;
+    if (oldAdzunaCountries === undefined) delete process.env.ADZUNA_COUNTRIES;
+    else process.env.ADZUNA_COUNTRIES = oldAdzunaCountries;
+    if (oldJoobleKeys === undefined) delete process.env.JOOBLE_API_KEYS;
+    else process.env.JOOBLE_API_KEYS = oldJoobleKeys;
   }
 });
 

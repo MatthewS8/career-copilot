@@ -62,11 +62,40 @@ This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your
 - Lets you open LinkedIn, Indeed, and Google Jobs searches based on your preferred role and location. These are ordinary search links opened for you to review manually, not sources used by **Find more jobs**.
 - Saves job links, descriptions, and notes locally, with application status tracking.
 - Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.
-- Drafts, copies, or downloads a cover letter using OpenAI, Gemini, or Anthropic. The selected provider receives the profile and job description when you request a draft.
+- Creates a per-job, browser-local cover-letter session using OpenAI, Gemini, or Anthropic. Start from scratch or paste a letter to build on, then ask for revisions; the selected provider receives the profile, job description, starting letter, current draft, and submitted revision request. Drafts can be edited, copied, downloaded, or cleared locally.
 
 Job discovery is intentionally limited to the public APIs described above. JobFinder does not log into, crawl, or scrape LinkedIn, Indeed, or other job boards. It does not automate applications; open the original listing and review/apply there yourself. Resume upload reads `.txt`, `.md`, and `.tex` files as text; paste text from other resume formats.
 
 GitHub Copilot is not configured as a provider in this MVP. Your local profile and saved jobs are not encrypted and are available to anyone using the same browser profile. Avoid using JobFinder on a shared device.
+
+## Roadmap
+
+JobFinder's purpose is to be a durable, personal job-search workspace: a place to understand the candidate, assess incoming opportunities, prepare strong applications, and remember the outcome. The features below are ordered so that each one makes the following work more useful. Before starting an item, verify the current implementation—this roadmap is a guide, not a substitute for checking the code and tests.
+
+### What works today
+
+- A guided profile/CV setup and an ongoing AI recruiter interview to gather background, preferences, skills, and job-alert searches.
+- Discovery through permitted public APIs, plus explicit import of locally supplied LinkedIn alert email content. Imported leads can be checked against the permitted verification sources, but JobFinder never reads a mailbox or fetches LinkedIn pages.
+- Recommended roles receive an AI match score when they go through the matching flow. Saved roles can hold the listing text, personal notes, and an application status.
+- Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, strengths, concerns, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.
+- A saved role has a local, iterative cover-letter session. You can supply a starting letter, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation and draft reopen with that job.
+
+### Next: make saved jobs decision-ready
+
+1. Add a job-research workspace to saved jobs: user-authored research notes, links, questions to investigate, contacts, and interview/application follow-ups. AI research must be based on information the user explicitly supplies or on allowed, clearly attributed public sources; never scrape LinkedIn, Indeed, company sites, or bypass access controls.
+2. Expand the application tracker only after the saved-job model can support it cleanly: dates for saved/applied/follow-up/interviews, next action, deadline, and a lightweight activity history. Keep all tracking data local unless the user explicitly chooses otherwise.
+
+### Then: make strong letters reusable
+
+1. Let the user promote a deliberately chosen finished letter to a reusable **base letter**. Future letters may start from a selected base, but the user must choose it; preserve version history and never silently replace a base or overwrite a draft.
+2. Let users compare and restore earlier AI-generated draft versions within a job's existing conversation. Keep user edits distinct from generated versions.
+3. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
+
+### Quality and release work
+
+- Add focused API and UI tests for every new persistence shape, scoring response, prompt boundary, and destructive action. Include migration handling for existing browser-local saved jobs.
+- Run `npm run check`, `npm run lint`, `npm run format:check`, `npm test`, and `git diff --check` before considering a feature complete. Perform a local acceptance pass with a non-sensitive sample profile and job listing.
+- Keep the app personal and local-first. Do not add automatic applications, mailbox access, LinkedIn/Indeed scraping, automatic fetching of listing URLs, or credentials in source control/browser storage/chat.
 
 ## Test
 

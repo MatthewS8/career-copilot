@@ -5,6 +5,23 @@
   type Provider = 'openai' | 'gemini' | 'anthropic';
   type ProviderState = { configured: boolean; source: 'saved' | 'none' };
   type JobStatus = 'Saved' | 'Applying' | 'Applied' | 'Interviewing' | 'Archived';
+  type JobAssessment = {
+    score: number;
+    rationale: string;
+    strengths: string[];
+    concerns: string[];
+    unansweredQuestions: string[];
+    nextAction: string;
+    assessedAt: string;
+    inputVersion: string;
+  };
+  type CoverLetterSession = {
+    startingLetter: string;
+    draft: string;
+    messages: ChatMessage[];
+    updatedAt: string;
+    provider: Provider;
+  };
   type Job = {
     id: string;
     title: string;
@@ -14,6 +31,8 @@
     notes: string;
     status: JobStatus;
     addedAt: string;
+    assessment?: JobAssessment;
+    coverLetter?: CoverLetterSession;
   };
   type Profile = {
     name: string;
@@ -128,9 +147,17 @@
   let letterResultField: HTMLTextAreaElement;
   let letterDescription = '';
   let letterProvider: Provider = 'openai';
+  let letterStartingLetter = '';
   let letterResult = '';
+  let letterMessages: ChatMessage[] = [];
+  let letterRevisionRequest = '';
   let letterStatus = '';
   let generatingLetter = false;
+  let assessmentDialog: HTMLDialogElement;
+  let activeAssessmentJobId: string | null = null;
+  let assessmentProvider: Provider = 'openai';
+  let assessmentStatus = '';
+  let assessingJob = false;
   let settingsStorageWarning = false;
   let settingsStorageMessage =
     'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again.';
@@ -642,8 +669,7 @@
     return `${suggestion.score ?? 0}% match`;
   }
 
-  function suggestionScoreClass(suggestion: Suggestion): string {
-    const score = suggestion.score ?? 0;
+  function scoreClass(score: number): string {
     if (score >= 75) return 'match-high';
     if (score >= 50) return 'match-medium';
     return 'match-low';
@@ -873,11 +899,127 @@
     persistJobs();
   }
 
+  function assessmentInputVersion(job: Job): string {
+    const source = JSON.stringify({
+      profile: {
+        roles: profile.roles,
+        location: profile.location,
+        workStyle: profile.workStyle,
+        skills: profile.skills,
+        priorities: profile.priorities,
+        experience: profile.experience,
+        resume: profile.resume,
+      },
+      job: { title: job.title, company: job.company, description: job.description },
+      recruiterContext: chatMessages.slice(-10),
+    });
+    let hash = 2_166_136_261;
+    for (let index = 0; index < source.length; index += 1) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function isAssessmentStale(job: Job): boolean {
+    return Boolean(job.assessment && job.assessment.inputVersion !== assessmentInputVersion(job));
+  }
+
+  function openAssessment(job: Job): void {
+    activeAssessmentJobId = job.id;
+    assessmentProvider = providerSettings[chatProvider].configured
+      ? chatProvider
+      : (providers.find((provider) => providerSettings[provider].configured) ?? chatProvider);
+    assessmentStatus = '';
+    assessmentDialog.showModal();
+  }
+
+  async function assessJob(): Promise<void> {
+    const job = jobs.find((entry) => entry.id === activeAssessmentJobId);
+    if (!job) return;
+    assessingJob = true;
+    assessmentStatus = 'Assessing this role against your current profile…';
+    const inputVersion = assessmentInputVersion(job);
+    try {
+      const response = await fetch('/api/job-assessment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: assessmentProvider,
+          profile: {
+            roles: limitText(profile.roles, 500),
+            location: limitText(profile.location, 300),
+            workStyle: limitText(profile.workStyle, 100),
+            skills: limitText(profile.skills, 1_000),
+            priorities: limitText(profile.priorities, 1_000),
+            experience: limitText(profile.experience, 2_000),
+            resume: limitText(profile.resume, 15_000),
+          },
+          job: {
+            title: job.title,
+            company: job.company,
+            description: limitText(job.description, 12_000),
+          },
+          messages: chatMessages.slice(-10).map((message) => ({
+            role: message.role,
+            content: limitText(message.content, 1_500),
+          })),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'The job could not be assessed.');
+      const assessment = data.assessment as Omit<JobAssessment, 'assessedAt' | 'inputVersion'>;
+      jobs = jobs.map((entry) =>
+        entry.id === job.id
+          ? {
+              ...entry,
+              assessment: {
+                score: Number(assessment.score),
+                rationale: String(assessment.rationale),
+                strengths: Array.isArray(assessment.strengths) ? assessment.strengths : [],
+                concerns: Array.isArray(assessment.concerns) ? assessment.concerns : [],
+                unansweredQuestions: Array.isArray(assessment.unansweredQuestions)
+                  ? assessment.unansweredQuestions
+                  : [],
+                nextAction: String(assessment.nextAction),
+                assessedAt: new Date().toISOString(),
+                inputVersion,
+              },
+            }
+          : entry,
+      );
+      persistJobs();
+      assessmentStatus = 'Assessment saved in this browser.';
+    } catch (error) {
+      assessmentStatus = errorMessage(error, 'Could not assess this job.');
+    } finally {
+      assessingJob = false;
+    }
+  }
+
+  function discardAssessment(job: Job): void {
+    if (!job.assessment || !window.confirm('Discard this saved job assessment from this browser?'))
+      return;
+    jobs = jobs.map((entry) => {
+      if (entry.id !== job.id) return entry;
+      const updated = { ...entry };
+      delete updated.assessment;
+      return updated;
+    });
+    persistJobs();
+  }
+
   function openLetter(job: Job): void {
     activeJobId = job.id;
     letterDescription = job.description || '';
+    letterStartingLetter = job.coverLetter?.startingLetter || '';
+    letterResult = job.coverLetter?.draft || '';
+    letterMessages = job.coverLetter?.messages || [];
+    letterRevisionRequest = '';
+    if (job.coverLetter?.provider && providers.includes(job.coverLetter.provider)) {
+      letterProvider = job.coverLetter.provider;
+    }
     letterStatus = '';
-    letterResult = '';
     letterDialog.showModal();
   }
 
@@ -885,7 +1027,26 @@
     return typeof value === 'string' ? value.slice(0, maxLength) : '';
   }
 
-  async function generateLetter(): Promise<void> {
+  function persistLetterSession(): void {
+    if (!activeJobId) return;
+    jobs = jobs.map((entry) =>
+      entry.id === activeJobId
+        ? {
+            ...entry,
+            coverLetter: {
+              startingLetter: letterStartingLetter,
+              draft: letterResult,
+              messages: letterMessages.slice(-20),
+              updatedAt: new Date().toISOString(),
+              provider: letterProvider,
+            },
+          }
+        : entry,
+    );
+    persistJobs();
+  }
+
+  async function generateLetter(revision = false): Promise<void> {
     const job = jobs.find((entry) => entry.id === activeJobId);
     if (!job) return;
     const description = letterDescription.trim();
@@ -893,8 +1054,17 @@
       letterStatus = 'Add the job description first.';
       return;
     }
+    const revisionRequest = letterRevisionRequest.trim();
+    if (revision && !letterResult.trim()) {
+      letterStatus = 'Generate or write a draft before asking for an adjustment.';
+      return;
+    }
+    if (revision && !revisionRequest) {
+      letterStatus = 'Describe the change you want first.';
+      return;
+    }
     generatingLetter = true;
-    letterStatus = 'Writing a first draft…';
+    letterStatus = revision ? 'Revising your letter…' : 'Writing your draft…';
     try {
       const profileForLetter = {
         name: limitText(profile.name, 200),
@@ -904,45 +1074,25 @@
         experience: limitText(profile.experience, 2_000),
         skills: limitText(profile.skills, 1_000),
         priorities: limitText(profile.priorities, 1_000),
-        resume: limitText(profile.resume, 20_000),
+        resume: limitText(profile.resume, 12_000),
         linkedin: limitText(profile.linkedin, 500),
       };
       const payload = {
         provider: letterProvider,
         profile: profileForLetter,
-        job: { title: job.title, company: job.company, description },
+        job: {
+          title: job.title,
+          company: job.company,
+          description: limitText(description, 12_000),
+        },
+        startingLetter: limitText(letterStartingLetter, 12_000),
+        currentDraft: limitText(letterResult, 12_000),
+        revisionRequest: limitText(revisionRequest, 2_500),
       };
       const encoder = new TextEncoder();
-      const fieldsToShorten: [Record<string, string>, string][] = [
-        [payload.profile, 'resume'],
-        [payload.job, 'description'],
-        [payload.profile, 'experience'],
-        [payload.profile, 'priorities'],
-        [payload.profile, 'skills'],
-      ];
       let body = JSON.stringify(payload);
-      for (const [object, field] of fieldsToShorten) {
-        if (encoder.encode(body).byteLength <= 45_000) break;
-        const original = object[field] ?? '';
-        let lower = 0;
-        let upper = original.length;
-        let best = '';
-        while (lower <= upper) {
-          const middle = Math.floor((lower + upper) / 2);
-          object[field] = original.slice(0, middle);
-          const candidate = JSON.stringify(payload);
-          if (encoder.encode(candidate).byteLength <= 45_000) {
-            best = object[field];
-            lower = middle + 1;
-          } else {
-            upper = middle - 1;
-          }
-        }
-        object[field] = best;
-        body = JSON.stringify(payload);
-      }
-      if (encoder.encode(body).byteLength > 45_000) {
-        throw new Error('Shorten the profile or job description before drafting a letter.');
+      if (encoder.encode(body).byteLength > 80_000) {
+        throw new Error('Shorten the profile, job description, or letter before continuing.');
       }
       const response = await fetch('/api/cover-letter', {
         method: 'POST',
@@ -951,13 +1101,45 @@
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'The letter could not be generated.');
-      letterResult = data.letter;
-      letterStatus = 'Draft ready — personalize and verify it before sending.';
+      const instruction =
+        revisionRequest ||
+        (letterStartingLetter.trim()
+          ? 'Create a tailored letter from my starting letter.'
+          : 'Create a tailored first draft.');
+      letterResult = String(data.letter);
+      letterMessages = [
+        ...letterMessages.slice(-18),
+        { role: 'user', content: instruction },
+        { role: 'assistant', content: letterResult },
+      ];
+      letterRevisionRequest = '';
+      jobs = jobs.map((entry) => (entry.id === job.id ? { ...entry, description } : entry));
+      persistLetterSession();
+      letterStatus = revision
+        ? 'Revised draft saved in this browser.'
+        : 'Draft saved — personalize and verify it before sending.';
     } catch (error) {
       letterStatus = errorMessage(error, 'Could not connect to the AI service.');
     } finally {
       generatingLetter = false;
     }
+  }
+
+  function clearLetterSession(): void {
+    if (!activeJobId || !window.confirm('Clear this cover-letter session from this browser?'))
+      return;
+    jobs = jobs.map((entry) => {
+      if (entry.id !== activeJobId) return entry;
+      const updated = { ...entry };
+      delete updated.coverLetter;
+      return updated;
+    });
+    persistJobs();
+    letterStartingLetter = '';
+    letterResult = '';
+    letterMessages = [];
+    letterRevisionRequest = '';
+    letterStatus = 'Cover-letter session cleared from this browser.';
   }
 
   async function copyLetter(): Promise<void> {
@@ -1186,10 +1368,8 @@
               <div class="provider-actions">
                 <button class="text-button" type="button" onclick={() => advanceOnboarding(2)}
                   >Skip for now</button
-                ><button
-                  class="button button-dark"
-                  type="button"
-                  onclick={continueFromResume}>Continue to recruiter →</button
+                ><button class="button button-dark" type="button" onclick={continueFromResume}
+                  >Continue to recruiter →</button
                 >
               </div>
             {:else if onboardingStep === 2}
@@ -1663,6 +1843,46 @@
                       </select>
                     </div>
                     {#if job.notes}<p class="job-notes">{job.notes}</p>{/if}
+                    {#if job.assessment}
+                      <section class="job-assessment" aria-label={`Assessment for ${job.title}`}>
+                        <div class="assessment-heading">
+                          <strong>AI fit assessment</strong>
+                          <span class={`match-score ${scoreClass(job.assessment.score)}`}
+                            >{job.assessment.score}% fit</span
+                          >
+                        </div>
+                        <p>{job.assessment.rationale}</p>
+                        {#if isAssessmentStale(job)}
+                          <p class="assessment-stale">
+                            Your profile, role details, or recruiter context changed — rerun this
+                            assessment.
+                          </p>
+                        {/if}
+                        {#if job.assessment.nextAction}
+                          <p class="assessment-next">
+                            <strong>Next action:</strong>
+                            {job.assessment.nextAction}
+                          </p>
+                        {/if}
+                        {#if job.assessment.strengths.length || job.assessment.concerns.length || job.assessment.unansweredQuestions.length}
+                          <details>
+                            <summary>See fit details</summary>
+                            {#if job.assessment.strengths.length}<p>
+                                <strong>Strengths:</strong>
+                                {job.assessment.strengths.join(' · ')}
+                              </p>{/if}
+                            {#if job.assessment.concerns.length}<p>
+                                <strong>Concerns:</strong>
+                                {job.assessment.concerns.join(' · ')}
+                              </p>{/if}
+                            {#if job.assessment.unansweredQuestions.length}<p>
+                                <strong>Questions:</strong>
+                                {job.assessment.unansweredQuestions.join(' · ')}
+                              </p>{/if}
+                          </details>
+                        {/if}
+                      </section>
+                    {/if}
                     <div class="job-card-footer">
                       {#if linkFor(job.url)}
                         <a
@@ -1675,6 +1895,19 @@
                       <button class="job-action-link" type="button" onclick={() => openLetter(job)}
                         >Draft cover letter ✳</button
                       >
+                      <button
+                        class="job-action-link"
+                        type="button"
+                        onclick={() => openAssessment(job)}
+                        >{job.assessment ? 'Rerun assessment' : 'Rate this role ✳'}</button
+                      >
+                      {#if job.assessment}
+                        <button
+                          class="job-action-link"
+                          type="button"
+                          onclick={() => discardAssessment(job)}>Discard assessment</button
+                        >
+                      {/if}
                       <button class="job-remove" type="button" onclick={() => removeJob(job.id)}
                         >Remove</button
                       >
@@ -1997,9 +2230,9 @@
                     <span class="match-unscored">{suggestionScoreLabel(suggestion)}</span>
                   {:else}
                     <span
-                      class:match-high={suggestionScoreClass(suggestion) === 'match-high'}
-                      class:match-medium={suggestionScoreClass(suggestion) === 'match-medium'}
-                      class:match-low={suggestionScoreClass(suggestion) === 'match-low'}
+                      class:match-high={scoreClass(suggestion.score ?? 0) === 'match-high'}
+                      class:match-medium={scoreClass(suggestion.score ?? 0) === 'match-medium'}
+                      class:match-low={scoreClass(suggestion.score ?? 0) === 'match-low'}
                       class="match-score">{suggestionScoreLabel(suggestion)}</span
                     >
                   {/if}
@@ -2173,8 +2406,9 @@
   <p class="eyebrow">APPLICATION STUDIO</p>
   <h2 id="letter-title">Let’s make it <em>personal.</em></h2>
   <p class="dialog-intro">
-    Your profile and this job description will be sent to the AI provider you select to create a
-    first draft. Review every detail before using it.
+    Start from scratch or paste a letter you already like. Your profile, job description, selected
+    starting letter, current draft, and each revision request are sent to the selected provider. The
+    session stays in this browser.
   </p>
   <div class="letter-settings">
     <label class="field"
@@ -2191,6 +2425,15 @@
         bind:value={letterDescription}
       ></textarea></label
     >
+    <label class="field"
+      ><span>Starting letter (optional)</span><textarea
+        rows="6"
+        maxlength="15000"
+        placeholder="Paste a cover letter you want this application to build on."
+        bind:value={letterStartingLetter}
+        oninput={persistLetterSession}
+      ></textarea></label
+    >
   </div>
   <div class="dialog-actions">
     <span class="status-message" id="letter-status" role="status">{letterStatus}</span><button
@@ -2198,24 +2441,107 @@
       id="generate-letter"
       type="button"
       disabled={generatingLetter}
-      onclick={generateLetter}>Draft my letter <span aria-hidden="true">✳</span></button
+      onclick={() => generateLetter()}
+      >Generate cover letter <span aria-hidden="true">✳</span></button
     >
   </div>
+  <section class="letter-session" aria-label="Cover-letter conversation">
+    {#if letterMessages.length}
+      <p class="eyebrow">DRAFTING CONVERSATION</p>
+      <div class="letter-messages">
+        {#each letterMessages as message, index (`${message.role}-${index}`)}
+          <article class:letter-message-user={message.role === 'user'} class="letter-message">
+            <strong>{message.role === 'user' ? 'You' : 'AI draft'}</strong>
+            <p>{message.content}</p>
+          </article>
+        {/each}
+      </div>
+    {/if}
+  </section>
   <label class="field letter-result-field" for="letter-result"
-    ><span>Your draft</span><textarea
+    ><span>Your current draft</span><textarea
       id="letter-result"
       rows="10"
-      readonly
-      placeholder="Your cover letter draft will appear here."
+      maxlength="15000"
+      placeholder="Your cover letter will appear here. You can edit it before asking the AI to adjust it."
       bind:this={letterResultField}
       bind:value={letterResult}
+      oninput={persistLetterSession}
     ></textarea></label
   >
+  <form
+    class="letter-revision-form"
+    onsubmit={(event) => {
+      event.preventDefault();
+      void generateLetter(true);
+    }}
+  >
+    <label class="field" for="letter-revision-request"
+      ><span>Ask for a change</span><textarea
+        id="letter-revision-request"
+        rows="3"
+        maxlength="2500"
+        placeholder="e.g. Make the opening more direct and mention my experience leading the migration."
+        bind:value={letterRevisionRequest}
+      ></textarea></label
+    >
+    <div class="dialog-actions">
+      <button
+        class="button button-dark"
+        type="submit"
+        disabled={generatingLetter || !letterResult.trim()}>Adjust letter</button
+      >
+      {#if letterMessages.length || letterStartingLetter || letterResult}
+        <button
+          class="text-button"
+          type="button"
+          disabled={generatingLetter}
+          onclick={clearLetterSession}>Clear session</button
+        >
+      {/if}
+    </div>
+  </form>
   <div class="letter-result-actions">
     <button class="text-button" id="copy-letter" type="button" onclick={copyLetter}
       >Copy letter <span aria-hidden="true">↗</span></button
     ><button class="text-button" id="download-letter" type="button" onclick={downloadLetter}
       >Download .txt <span aria-hidden="true">↓</span></button
+    >
+  </div>
+</dialog>
+
+<dialog
+  class="letter-dialog assessment-dialog"
+  bind:this={assessmentDialog}
+  aria-labelledby="assessment-title"
+>
+  <form method="dialog" class="dialog-close-form">
+    <button class="dialog-close" aria-label="Close">×</button>
+  </form>
+  <p class="eyebrow">OPPORTUNITY REVIEW</p>
+  <h2 id="assessment-title">Is this a <em>good fit?</em></h2>
+  <p class="dialog-intro">
+    The selected provider receives your profile, this role’s title, company and description, plus up
+    to ten recent recruiter messages. The resulting score is a suggestion based only on that
+    information—not a prediction or a substitute for checking the listing.
+  </p>
+  <label class="field"
+    ><span>AI provider</span><select bind:value={assessmentProvider}
+      >{#each providers as provider (provider)}<option
+          value={provider}
+          disabled={!providerSettings[provider].configured}
+          >{providerNames[provider]}{providerSettings[provider].configured
+            ? ''
+            : ' (no key)'}</option
+        >{/each}</select
+    ></label
+  >
+  <div class="dialog-actions">
+    <span class="status-message" role="status">{assessmentStatus}</span><button
+      class="button button-dark"
+      type="button"
+      disabled={assessingJob || !providerSettings[assessmentProvider].configured}
+      onclick={assessJob}>{assessingJob ? 'Assessing…' : 'Rate this role ✳'}</button
     >
   </div>
 </dialog>
