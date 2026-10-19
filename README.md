@@ -60,7 +60,8 @@ This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your
 
 - Saves your profile and resume text (including LaTeX source) on the JobFinder server; saved jobs, recommendations, and preferences remain in browser local storage.
 - Lets you open LinkedIn, Indeed, and Google Jobs searches based on your preferred role and location. These are ordinary search links opened for you to review manually, not sources used by **Find more jobs**.
-- Saves job links, descriptions, and notes locally, with application status tracking.
+- Saves job links, descriptions, notes, and a per-role research workspace locally. Add your own research notes, permitted source links, questions, contacts, and follow-ups; JobFinder does not fetch listings or company sites for this workspace.
+- Tracks each saved role locally with saved, applied, follow-up, and interview dates; a next action, deadline, and lightweight activity history. Status changes are recorded in that history.
 - Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.
 - Creates a per-job, browser-local cover-letter session using OpenAI, Gemini, or Anthropic. Start from scratch or paste a letter to build on, then ask for revisions; the selected provider receives the profile, job description, starting letter, current draft, and submitted revision request. Drafts can be edited, copied, downloaded, or cleared locally.
 
@@ -78,18 +79,19 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 - Discovery through permitted public APIs, plus explicit import of locally supplied LinkedIn alert email content. Imported leads can be checked against the permitted verification sources, but JobFinder never reads a mailbox or fetches LinkedIn pages.
 - Recommended roles receive an AI match score when they go through the matching flow. Saved roles can hold the listing text, personal notes, and an application status.
 - Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, strengths, concerns, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.
+- Saved roles include a browser-local research and application-tracking workspace for user-authored notes, links, questions, contacts, follow-ups, dates, next actions, deadlines, and activity history.
 - A saved role has a local, iterative cover-letter session. You can supply a starting letter, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation and draft reopen with that job.
 
-### Next: make saved jobs decision-ready
-
-1. Add a job-research workspace to saved jobs: user-authored research notes, links, questions to investigate, contacts, and interview/application follow-ups. AI research must be based on information the user explicitly supplies or on allowed, clearly attributed public sources; never scrape LinkedIn, Indeed, company sites, or bypass access controls.
-2. Expand the application tracker only after the saved-job model can support it cleanly: dates for saved/applied/follow-up/interviews, next action, deadline, and a lightweight activity history. Keep all tracking data local unless the user explicitly chooses otherwise.
-
-### Then: make strong letters reusable
+### Next: make strong letters reusable
 
 1. Let the user promote a deliberately chosen finished letter to a reusable **base letter**. Future letters may start from a selected base, but the user must choose it; preserve version history and never silently replace a base or overwrite a draft.
 2. Let users compare and restore earlier AI-generated draft versions within a job's existing conversation. Keep user edits distinct from generated versions.
 3. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
+
+### Later: keep the CV current
+
+1. Let users ask the AI to propose CV updates from knowledge gained in recruiter conversations, saved-job research, and application tracking. Only use user-supplied or user-confirmed information; never invent experience, achievements, qualifications, or company facts.
+2. Present proposed changes as a reviewable diff or draft. The user must explicitly accept each update before the saved CV/resume text is changed, and the original must remain recoverable.
 
 ### Quality and release work
 

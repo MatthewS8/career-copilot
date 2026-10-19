@@ -22,6 +22,24 @@
     updatedAt: string;
     provider: Provider;
   };
+  type ResearchLink = { id: string; label: string; url: string };
+  type JobResearch = {
+    notes: string;
+    links: ResearchLink[];
+    questions: string;
+    contacts: string;
+    followUps: string;
+  };
+  type Activity = { id: string; text: string; happenedAt: string };
+  type JobTracking = {
+    savedOn: string;
+    appliedOn: string;
+    followUpOn: string;
+    interviewOn: string;
+    nextAction: string;
+    deadline: string;
+    activity: Activity[];
+  };
   type Job = {
     id: string;
     title: string;
@@ -33,6 +51,8 @@
     addedAt: string;
     assessment?: JobAssessment;
     coverLetter?: CoverLetterSession;
+    research?: JobResearch;
+    tracking?: JobTracking;
   };
   type Profile = {
     name: string;
@@ -104,9 +124,93 @@
     }
   }
 
+  function textValue(value: unknown): string {
+    return typeof value === 'string' ? value : '';
+  }
+
+  function dateValue(value: unknown): string {
+    return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+  }
+
+  function newResearch(value: Partial<JobResearch> = {}): JobResearch {
+    return {
+      notes: textValue(value.notes),
+      links: Array.isArray(value.links)
+        ? value.links
+            .filter((link): link is ResearchLink =>
+              Boolean(
+                link &&
+                typeof link.id === 'string' &&
+                typeof link.label === 'string' &&
+                typeof link.url === 'string' &&
+                linkFor(link.url),
+              ),
+            )
+            .slice(0, 30)
+        : [],
+      questions: textValue(value.questions),
+      contacts: textValue(value.contacts),
+      followUps: textValue(value.followUps),
+    };
+  }
+
+  function newTracking(value: Partial<JobTracking> = {}, addedAt = ''): JobTracking {
+    return {
+      savedOn: dateValue(value.savedOn) || dateValue(addedAt.slice(0, 10)),
+      appliedOn: dateValue(value.appliedOn),
+      followUpOn: dateValue(value.followUpOn),
+      interviewOn: dateValue(value.interviewOn),
+      nextAction: textValue(value.nextAction),
+      deadline: dateValue(value.deadline),
+      activity: Array.isArray(value.activity)
+        ? value.activity
+            .filter((item): item is Activity =>
+              Boolean(
+                item &&
+                typeof item.id === 'string' &&
+                typeof item.text === 'string' &&
+                typeof item.happenedAt === 'string',
+              ),
+            )
+            .slice(0, 100)
+        : [],
+    };
+  }
+
+  function migrateJobs(value: unknown): Job[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return [];
+      const job = entry as Partial<Job>;
+      if (
+        !textValue(job.id) ||
+        !textValue(job.title) ||
+        !textValue(job.company) ||
+        !linkFor(textValue(job.url))
+      )
+        return [];
+      const addedAt = textValue(job.addedAt) || new Date().toISOString();
+      return [
+        {
+          ...job,
+          id: textValue(job.id),
+          title: textValue(job.title),
+          company: textValue(job.company),
+          url: linkFor(textValue(job.url)),
+          description: textValue(job.description),
+          notes: textValue(job.notes),
+          status: statuses.includes(job.status as JobStatus) ? (job.status as JobStatus) : 'Saved',
+          addedAt,
+          research: newResearch(job.research),
+          tracking: newTracking(job.tracking, addedAt),
+        },
+      ];
+    });
+  }
+
   const storedProfile = readStorage<Partial<Profile>>(PROFILE_KEY, {});
   let profile: Profile = { ...emptyProfile, ...storedProfile };
-  let jobs = readStorage<Job[]>(JOBS_KEY, []);
+  let jobs = migrateJobs(readStorage<unknown>(JOBS_KEY, []));
   let chatMessages = readStorage<ChatMessage[]>(CHAT_KEY, []);
   let suggestions = readStorage<Suggestion[]>(SUGGESTIONS_KEY, []);
   let hiddenJobUrls = new SvelteSet(
@@ -194,6 +298,7 @@
   );
 
   onMount(() => {
+    persistJobs();
     void refreshProviderSettings();
     void loadSavedProfile();
   });
@@ -886,11 +991,139 @@
   }
 
   function updateJobStatus(job: Job, event: Event): void {
+    const status = (event.currentTarget as HTMLSelectElement).value as JobStatus;
+    if (status === job.status) return;
     jobs = jobs.map((entry) =>
       entry.id === job.id
-        ? { ...entry, status: (event.currentTarget as HTMLSelectElement).value as JobStatus }
+        ? {
+            ...entry,
+            status,
+            tracking: {
+              ...newTracking(entry.tracking, entry.addedAt),
+              activity: [
+                {
+                  id: crypto.randomUUID(),
+                  text: `Status changed from ${entry.status} to ${status}.`,
+                  happenedAt: new Date().toISOString(),
+                },
+                ...newTracking(entry.tracking, entry.addedAt).activity,
+              ].slice(0, 100),
+            },
+          }
         : entry,
     );
+    persistJobs();
+  }
+
+  function updateResearch(
+    job: Job,
+    field: Exclude<keyof JobResearch, 'links'>,
+    value: string,
+  ): void {
+    jobs = jobs.map((entry) =>
+      entry.id === job.id
+        ? {
+            ...entry,
+            research: { ...newResearch(entry.research), [field]: value.slice(0, 10_000) },
+          }
+        : entry,
+    );
+    persistJobs();
+  }
+
+  function addResearchLink(job: Job, event: SubmitEvent): void {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const url = linkFor(String(data.get('research-url') ?? ''));
+    const label = String(data.get('research-label') ?? '').trim();
+    const urlInput = form.elements.namedItem('research-url');
+    if (!(urlInput instanceof HTMLInputElement)) return;
+    if (!url) {
+      urlInput.setCustomValidity('Enter a valid http or https URL.');
+      urlInput.reportValidity();
+      return;
+    }
+    urlInput.setCustomValidity('');
+    jobs = jobs.map((entry) =>
+      entry.id === job.id
+        ? {
+            ...entry,
+            research: {
+              ...newResearch(entry.research),
+              links: [
+                ...newResearch(entry.research).links,
+                { id: crypto.randomUUID(), label: label || url, url },
+              ].slice(-30),
+            },
+          }
+        : entry,
+    );
+    form.reset();
+    persistJobs();
+  }
+
+  function removeResearchLink(job: Job, linkId: string): void {
+    jobs = jobs.map((entry) =>
+      entry.id === job.id
+        ? {
+            ...entry,
+            research: {
+              ...newResearch(entry.research),
+              links: newResearch(entry.research).links.filter((link) => link.id !== linkId),
+            },
+          }
+        : entry,
+    );
+    persistJobs();
+  }
+
+  function updateTracking(
+    job: Job,
+    field: Exclude<keyof JobTracking, 'activity'>,
+    value: string,
+  ): void {
+    jobs = jobs.map((entry) =>
+      entry.id === job.id
+        ? {
+            ...entry,
+            tracking: {
+              ...newTracking(entry.tracking, entry.addedAt),
+              [field]:
+                field.endsWith('On') || field === 'deadline'
+                  ? dateValue(value)
+                  : value.slice(0, 2_000),
+            },
+          }
+        : entry,
+    );
+    persistJobs();
+  }
+
+  function addActivity(job: Job, event: SubmitEvent): void {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const text = String(new FormData(form).get('activity') ?? '').trim();
+    if (!text) return;
+    jobs = jobs.map((entry) =>
+      entry.id === job.id
+        ? {
+            ...entry,
+            tracking: {
+              ...newTracking(entry.tracking, entry.addedAt),
+              activity: [
+                {
+                  id: crypto.randomUUID(),
+                  text: text.slice(0, 1_000),
+                  happenedAt: new Date().toISOString(),
+                },
+                ...newTracking(entry.tracking, entry.addedAt).activity,
+              ].slice(0, 100),
+            },
+          }
+        : entry,
+    );
+    form.reset();
     persistJobs();
   }
 
@@ -1883,6 +2116,170 @@
                         {/if}
                       </section>
                     {/if}
+                    <details class="job-workspace">
+                      <summary>Research &amp; tracking</summary>
+                      <p class="workspace-privacy">
+                        Kept only in this browser. Research is user-authored; JobFinder does not
+                        fetch listings or company sites.
+                      </p>
+                      <div class="workspace-grid">
+                        <section class="workspace-section">
+                          <h4>Research</h4>
+                          <label class="field"
+                            ><span>Notes</span><textarea
+                              rows="3"
+                              maxlength="10000"
+                              value={job.research?.notes ?? ''}
+                              onblur={(event) =>
+                                updateResearch(job, 'notes', event.currentTarget.value)}
+                              placeholder="What you learn from material you choose to review"
+                            ></textarea></label
+                          >
+                          <label class="field"
+                            ><span>Questions to investigate</span><textarea
+                              rows="2"
+                              maxlength="10000"
+                              value={job.research?.questions ?? ''}
+                              onblur={(event) =>
+                                updateResearch(job, 'questions', event.currentTarget.value)}
+                              placeholder="Questions for the recruiter, hiring team, or your own research"
+                            ></textarea></label
+                          >
+                          <label class="field"
+                            ><span>Contacts</span><textarea
+                              rows="2"
+                              maxlength="10000"
+                              value={job.research?.contacts ?? ''}
+                              onblur={(event) =>
+                                updateResearch(job, 'contacts', event.currentTarget.value)}
+                              placeholder="Names, context, and how to follow up"
+                            ></textarea></label
+                          >
+                          <label class="field"
+                            ><span>Research follow-ups</span><textarea
+                              rows="2"
+                              maxlength="10000"
+                              value={job.research?.followUps ?? ''}
+                              onblur={(event) =>
+                                updateResearch(job, 'followUps', event.currentTarget.value)}
+                              placeholder="Things to do before applying or interviewing"
+                            ></textarea></label
+                          >
+                          <form
+                            class="research-link-form"
+                            onsubmit={(event) => addResearchLink(job, event)}
+                          >
+                            <label class="field"
+                              ><span>Source URL</span><input
+                                name="research-url"
+                                type="url"
+                                required
+                                placeholder="https://…"
+                              /></label
+                            >
+                            <label class="field"
+                              ><span>Label (optional)</span><input
+                                name="research-label"
+                                maxlength="200"
+                                placeholder="e.g. Product blog"
+                              /></label
+                            >
+                            <button class="button button-light" type="submit">Add link</button>
+                          </form>
+                          {#if job.research?.links.length}
+                            <ul class="research-links">
+                              {#each job.research.links as link (link.id)}
+                                <li>
+                                  <a href={link.url} target="_blank" rel="noopener noreferrer"
+                                    >{link.label} ↗</a
+                                  ><button
+                                    type="button"
+                                    onclick={() => removeResearchLink(job, link.id)}>Remove</button
+                                  >
+                                </li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </section>
+                        <section class="workspace-section">
+                          <h4>Application tracker</h4>
+                          <div class="date-fields">
+                            <label class="field"
+                              ><span>Saved</span><input
+                                type="date"
+                                value={job.tracking?.savedOn ?? ''}
+                                onchange={(event) =>
+                                  updateTracking(job, 'savedOn', event.currentTarget.value)}
+                              /></label
+                            >
+                            <label class="field"
+                              ><span>Applied</span><input
+                                type="date"
+                                value={job.tracking?.appliedOn ?? ''}
+                                onchange={(event) =>
+                                  updateTracking(job, 'appliedOn', event.currentTarget.value)}
+                              /></label
+                            >
+                            <label class="field"
+                              ><span>Follow-up</span><input
+                                type="date"
+                                value={job.tracking?.followUpOn ?? ''}
+                                onchange={(event) =>
+                                  updateTracking(job, 'followUpOn', event.currentTarget.value)}
+                              /></label
+                            >
+                            <label class="field"
+                              ><span>Interview</span><input
+                                type="date"
+                                value={job.tracking?.interviewOn ?? ''}
+                                onchange={(event) =>
+                                  updateTracking(job, 'interviewOn', event.currentTarget.value)}
+                              /></label
+                            >
+                          </div>
+                          <label class="field"
+                            ><span>Next action</span><textarea
+                              rows="2"
+                              maxlength="2000"
+                              value={job.tracking?.nextAction ?? ''}
+                              onblur={(event) =>
+                                updateTracking(job, 'nextAction', event.currentTarget.value)}
+                              placeholder="What will you do next?"
+                            ></textarea></label
+                          >
+                          <label class="field"
+                            ><span>Deadline</span><input
+                              type="date"
+                              value={job.tracking?.deadline ?? ''}
+                              onchange={(event) =>
+                                updateTracking(job, 'deadline', event.currentTarget.value)}
+                            /></label
+                          >
+                          <form class="activity-form" onsubmit={(event) => addActivity(job, event)}>
+                            <label class="field"
+                              ><span>Add activity</span><input
+                                name="activity"
+                                required
+                                maxlength="1000"
+                                placeholder="e.g. Sent a follow-up email"
+                              /></label
+                            >
+                            <button class="button button-light" type="submit">Add activity</button>
+                          </form>
+                          {#if job.tracking?.activity.length}
+                            <ol class="activity-history">
+                              {#each job.tracking.activity as item (item.id)}
+                                <li>
+                                  <span>{item.text}</span><time datetime={item.happenedAt}
+                                    >{new Date(item.happenedAt).toLocaleDateString()}</time
+                                  >
+                                </li>
+                              {/each}
+                            </ol>
+                          {/if}
+                        </section>
+                      </div>
+                    </details>
                     <div class="job-card-footer">
                       {#if linkFor(job.url)}
                         <a

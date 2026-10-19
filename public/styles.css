@@ -189,6 +189,27 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .assessment-next { color: #395540; }
 .job-assessment details { margin-top: 8px; }
 .job-assessment summary { color: var(--green); cursor: pointer; font-weight: 600; }
+.job-workspace { margin: 13px 0 0 47px; padding: 11px 12px; border: 1px solid #e6e8e1; border-radius: 7px; background: #fcfcfa; color: #596157; font-size: 10px; line-height: 1.55; }
+.job-workspace > summary { color: var(--green); cursor: pointer; font-weight: 600; }
+.workspace-privacy { margin: 7px 0 11px; color: #777d74; }
+.workspace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.workspace-section h4 { margin: 0 0 8px; color: #425742; font-size: 10px; }
+.workspace-section .field { gap: 4px; margin-top: 8px; }
+.workspace-section textarea { min-height: 48px; }
+.research-link-form, .activity-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 7px; margin-top: 9px; }
+.activity-form { grid-template-columns: minmax(0, 1fr) auto; }
+.research-link-form .field, .activity-form .field { margin-top: 0; }
+.research-link-form input, .activity-form input { min-height: 31px; padding: 6px 8px; font-size: 10px; }
+.research-link-form .button, .activity-form .button { min-height: 31px; padding: 7px 9px; font-size: 9px; }
+.research-links, .activity-history { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; }
+.research-links li, .activity-history li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.research-links a { overflow: hidden; color: var(--green); text-overflow: ellipsis; white-space: nowrap; }
+.research-links button { padding: 0; border: 0; background: transparent; color: #8b8f87; cursor: pointer; font-size: 9px; }
+.date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.date-fields .field { margin-top: 0; }
+.date-fields input { min-height: 31px; padding: 5px 7px; font-size: 10px; }
+.activity-history li { align-items: start; padding-top: 5px; border-top: 1px solid #eeefe9; }
+.activity-history time { flex: 0 0 auto; color: #858a82; font-size: 9px; }
 .job-card-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 13px; margin: 14px 0 0 47px; padding-top: 11px; border-top: 1px solid #f0f0eb; }
 .job-action-link, .job-remove { padding: 0; border: 0; background: transparent; color: var(--green); cursor: pointer; font-size: 9px; font-weight: 600; text-decoration: none; }
 .job-remove { margin-left: auto; color: #96988f; font-weight: 400; }
@@ -279,6 +300,7 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .jobs-layout { grid-template-columns: 1fr; }
   .job-list-section { grid-row: 1; }
   .job-form-panel { grid-row: 2; }
+  .workspace-grid { grid-template-columns: 1fr; }
   .saved-count { width: 66px; height: 66px; margin-right: 0; }
   .saved-count strong { margin-bottom: -12px; font-size: 22px; }
   .saved-count span { font-size: 8px; }
@@ -302,6 +324,8 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .section-heading h2 { font-size: 17px; }
   .text-button { font-size: 10px; }
   .search-panel, .add-prompt { gap: 10px; padding: 15px; }
+  .job-workspace, .job-card-footer, .job-notes, .job-assessment { margin-left: 0; }
+  .research-link-form { grid-template-columns: 1fr; }
   .panel-icon { width: 33px; height: 33px; }
   .form-grid { grid-template-columns: 1fr; padding-left: 0; }
   .field-wide { grid-column: auto; }
