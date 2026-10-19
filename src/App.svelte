@@ -1322,6 +1322,16 @@
 
   function closeLetter(): void {
     activeJobId = null;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openNewJobForm(): void {
+    closeLetter();
+    requestAnimationFrame(() => {
+      const titleInput = document.querySelector<HTMLInputElement>('#job-title');
+      titleInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      titleInput?.focus();
+    });
   }
 
   function persistApplicationChat(): void {
@@ -1632,7 +1642,7 @@
   }
 </script>
 
-<div class="app-shell">
+<div class="app-shell" class:studio-open={Boolean(activeJobId)}>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="JobFinder home">
       <span class="brand-mark" aria-hidden="true">j.</span>
@@ -2213,6 +2223,7 @@
               <form id="job-form" onsubmit={saveJob}>
                 <label class="field"
                   ><span>Job title *</span><input
+                    id="job-title"
                     name="title"
                     required
                     maxlength="200"
@@ -2286,7 +2297,7 @@
                   <div class="empty-state compact-empty">No saved jobs match this filter.</div>
                 {/if}
                 {#each visibleJobs as job (job.id)}
-                  <article class="job-card">
+                  <article class="job-card" class:studio-job={activeJobId === job.id}>
                     <div class="job-card-top">
                       <div class="job-company">
                         <span class="company-mark"
@@ -2363,6 +2374,12 @@
                             type="button"
                             disabled={generatingLetter || applicationChatBusy}
                             onclick={closeLetter}>Close studio</button
+                          >
+                          <button
+                            class="text-button"
+                            type="button"
+                            disabled={generatingLetter || applicationChatBusy}
+                            onclick={openNewJobForm}>+ Add a new saved job</button
                           >
                         </div>
                         <p class="workspace-privacy">
@@ -2746,10 +2763,7 @@
                         class="job-action-link"
                         type="button"
                         disabled={generatingLetter || applicationChatBusy}
-                        onclick={() => openLetter(job)}
-                        >{activeJobId === job.id
-                          ? 'Hide application studio'
-                          : 'Open application studio'} ✳</button
+                        onclick={() => openLetter(job)}>Open application studio ✳</button
                       >
                       <button
                         class="job-action-link"

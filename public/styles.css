@@ -176,6 +176,12 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .job-application-studio h4 em { color: var(--green); font-family: Georgia, serif; font-weight: 500; }
 .job-application-studio .workspace-grid { margin-top: 14px; }
 .application-chat-messages { display: grid; max-height: 360px; gap: 8px; margin: 10px 0; overflow: auto; }
+.studio-open .jobs-layout { display: block; }
+.studio-open .job-form-panel, .studio-open .list-toolbar, .studio-open .job-card:not(.studio-job) { display: none; }
+.studio-open .job-card.studio-job { padding: 0; border: 0; background: transparent; }
+.studio-open .job-card.studio-job > :not(.job-application-studio) { display: none; }
+.studio-open .job-application-studio { max-width: 1180px; margin: 0 auto; padding: 0; border: 0; background: transparent; }
+.studio-open .job-application-studio .workspace-grid { grid-template-columns: minmax(0, 1.2fr) minmax(330px, .8fr); gap: 28px; }
 .job-card-top { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .job-company { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .job-company h3 { overflow: hidden; margin: 0 0 3px; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
