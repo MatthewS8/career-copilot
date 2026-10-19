@@ -5,6 +5,7 @@ import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createServer } from '../server';
+import { migrateBaseLetters, newCoverLetter } from '../src/job-storage';
 
 type JsonBody = {
   error: string;
@@ -95,9 +96,59 @@ test('serves the app with security headers', async () => {
   assert.match(script, /provider-key-form/);
   assert.match(script, /Autofill from resume/);
   assert.match(script, /\.tex/);
+  assert.match(script, /Application-context chat/);
+  assert.match(script, /Open application studio/);
+  assert.match(script, /Generated versions/);
+  assert.match(script, /Clear this cover-letter session/);
   const stylesheetPath = html.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
   assert.ok(stylesheetPath);
   assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
+});
+
+test('migrates reusable-base provenance and immutable generated versions', () => {
+  const bases = migrateBaseLetters([
+    {
+      id: 'base-1',
+      name: 'General',
+      text: 'Base text',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceJobId: 'job-1',
+      sourceJobTitle: 'Designer · Example',
+    },
+    { name: 'Discarded', text: '' },
+  ]);
+  assert.deepEqual(bases, [
+    {
+      id: 'base-1',
+      name: 'General',
+      text: 'Base text',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      sourceJobId: 'job-1',
+      sourceJobTitle: 'Designer · Example',
+    },
+  ]);
+  const letter = newCoverLetter({
+    draft: 'Current draft',
+    messages: [],
+    versions: [{ id: 'v1', draft: 'Older generated draft', createdAt: '2026-01-01T00:00:00.000Z' }],
+    provider: 'invalid',
+    baseLetterId: 'base-1',
+    baseLetterName: 'General',
+  });
+  assert.ok(letter);
+  assert.equal(letter.startingLetter, '');
+  assert.equal(letter.draft, 'Current draft');
+  assert.equal(letter.provider, 'openai');
+  assert.equal(letter.baseLetterId, 'base-1');
+  assert.equal(letter.baseLetterName, 'General');
+  assert.deepEqual(letter.versions, [
+    {
+      id: 'v1',
+      draft: 'Older generated draft',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      request: '',
+    },
+  ]);
 });
 
 test('stores a profile on the server for subsequent clients', async () => {
@@ -472,6 +523,59 @@ test('sends a cover-letter prompt to the selected provider', async () => {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
+
+test('application-context chat validates the transcript and keeps the prompt grounded', async () => {
+  const oldKey = process.env.OPENAI_API_KEY;
+  const originalFetch = global.fetch;
+  await configureProvider('openai');
+  let outboundRequest: CapturedRequest | undefined;
+  mockFetch(async (url, options) => {
+    outboundRequest = { url, options };
+    return new Response(
+      JSON.stringify({
+        choices: [
+          { message: { content: '{"reply":"Use a specific example from your experience."}' } },
+        ],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/application-chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { name: 'Alex', experience: 'Built research tools.' },
+        job: { title: 'Designer', company: 'Example', description: 'Make useful products.' },
+        applicationContext: 'Candidate confirmed: the application asks about a relevant project.',
+        messages: [{ role: 'user', content: 'Practise a project answer.' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await responseJson(response), {
+      reply: 'Use a specific example from your experience.',
+    });
+    assert.ok(outboundRequest);
+    assert.match(outboundRequest.options.body, /application asks about a relevant project/);
+    assert.match(outboundRequest.options.body, /Practise a project answer/);
+
+    const invalid = await originalFetch(`${baseUrl}/api/application-chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        job: { title: 'Designer', company: 'Example', description: 'Make useful products.' },
+        messages: [{ role: 'assistant', content: 'Not a candidate turn.' }],
+      }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.match((await responseJson(invalid)).error, /last message/);
+  } finally {
+    global.fetch = originalFetch;
+    if (oldKey !== undefined) process.env.OPENAI_API_KEY = oldKey;
   }
 });
 

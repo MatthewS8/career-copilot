@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
+  import {
+    migrateBaseLetters as migrateStoredBaseLetters,
+    newApplicationChat as migrateApplicationChat,
+    newCoverLetter as migrateCoverLetter,
+  } from './job-storage';
 
   type Provider = 'openai' | 'gemini' | 'anthropic';
   type ProviderState = { configured: boolean; source: 'saved' | 'none' };
@@ -22,6 +27,11 @@
     versions: GeneratedLetterVersion[];
     baseLetterId?: string;
     baseLetterName?: string;
+    updatedAt: string;
+    provider: Provider;
+  };
+  type ApplicationChatSession = {
+    messages: ChatMessage[];
     updatedAt: string;
     provider: Provider;
   };
@@ -68,6 +78,7 @@
     addedAt: string;
     assessment?: JobAssessment;
     coverLetter?: CoverLetterSession;
+    applicationChat?: ApplicationChatSession;
     research?: JobResearch;
     tracking?: JobTracking;
   };
@@ -150,78 +161,16 @@
     return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
   }
 
-  function newLetterVersions(value: unknown): GeneratedLetterVersion[] {
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((version): version is Partial<GeneratedLetterVersion> =>
-        Boolean(version && typeof version === 'object'),
-      )
-      .map((version) => ({
-        id: textValue(version.id) || crypto.randomUUID(),
-        draft: textValue(version.draft).slice(0, 15_000),
-        createdAt: textValue(version.createdAt) || new Date().toISOString(),
-        request: textValue(version.request).slice(0, 2_500),
-      }))
-      .filter((version) => version.draft)
-      .slice(-30);
+  function newCoverLetter(value: unknown): CoverLetterSession | undefined {
+    return migrateCoverLetter(value);
   }
 
-  function newCoverLetter(value: unknown): CoverLetterSession | undefined {
-    if (!value || typeof value !== 'object') return undefined;
-    const session = value as Partial<CoverLetterSession>;
-    if (
-      !textValue(session.startingLetter) &&
-      !textValue(session.draft) &&
-      !Array.isArray(session.messages)
-    )
-      return undefined;
-    const coverLetter: CoverLetterSession = {
-      startingLetter: textValue(session.startingLetter).slice(0, 15_000),
-      draft: textValue(session.draft).slice(0, 15_000),
-      messages: Array.isArray(session.messages)
-        ? session.messages
-            .filter((message): message is ChatMessage =>
-              Boolean(
-                message &&
-                typeof message === 'object' &&
-                (message.role === 'user' || message.role === 'assistant') &&
-                typeof message.content === 'string',
-              ),
-            )
-            .slice(-20)
-        : [],
-      versions: newLetterVersions(session.versions),
-      updatedAt: textValue(session.updatedAt) || new Date().toISOString(),
-      provider: providers.includes(session.provider as Provider)
-        ? (session.provider as Provider)
-        : 'openai',
-    };
-    const baseLetterId = textValue(session.baseLetterId);
-    const baseLetterName = textValue(session.baseLetterName);
-    if (baseLetterId) coverLetter.baseLetterId = baseLetterId;
-    if (baseLetterName) coverLetter.baseLetterName = baseLetterName;
-    return coverLetter;
+  function newApplicationChat(value: unknown): ApplicationChatSession | undefined {
+    return migrateApplicationChat(value);
   }
 
   function migrateBaseLetters(value: unknown): BaseLetter[] {
-    if (!Array.isArray(value)) return [];
-    return value
-      .filter((entry): entry is Partial<BaseLetter> => Boolean(entry && typeof entry === 'object'))
-      .map((entry) => {
-        const base: BaseLetter = {
-          id: textValue(entry.id) || crypto.randomUUID(),
-          name: textValue(entry.name).slice(0, 120),
-          text: textValue(entry.text).slice(0, 15_000),
-          createdAt: textValue(entry.createdAt) || new Date().toISOString(),
-        };
-        const sourceJobId = textValue(entry.sourceJobId);
-        const sourceJobTitle = textValue(entry.sourceJobTitle);
-        if (sourceJobId) base.sourceJobId = sourceJobId;
-        if (sourceJobTitle) base.sourceJobTitle = sourceJobTitle;
-        return base;
-      })
-      .filter((entry) => entry.name && entry.text)
-      .slice(-50);
+    return migrateStoredBaseLetters(value);
   }
 
   function newResearch(value: Partial<JobResearch> = {}): JobResearch {
@@ -283,6 +232,7 @@
         return [];
       const addedAt = textValue(job.addedAt) || new Date().toISOString();
       const coverLetter = newCoverLetter(job.coverLetter);
+      const applicationChat = newApplicationChat(job.applicationChat);
       return [
         {
           ...job,
@@ -295,6 +245,7 @@
           status: statuses.includes(job.status as JobStatus) ? (job.status as JobStatus) : 'Saved',
           addedAt,
           ...(coverLetter ? { coverLetter } : {}),
+          ...(applicationChat ? { applicationChat } : {}),
           research: newResearch(job.research),
           tracking: newTracking(job.tracking, addedAt),
         },
@@ -342,7 +293,6 @@
   let jobFilter: 'all' | JobStatus = 'all';
   let profileStatus = '';
   let activeJobId: string | null = null;
-  let letterDialog: HTMLDialogElement;
   let letterResultField: HTMLTextAreaElement;
   let letterDescription = '';
   let letterProvider: Provider = 'openai';
@@ -354,6 +304,11 @@
   let letterRevisionRequest = '';
   let letterStatus = '';
   let generatingLetter = false;
+  let applicationChatMessages: ChatMessage[] = [];
+  let applicationChatInput = '';
+  let applicationChatProvider: Provider = 'openai';
+  let applicationChatStatus = '';
+  let applicationChatBusy = false;
   let assessmentDialog: HTMLDialogElement;
   let activeAssessmentJobId: string | null = null;
   let assessmentProvider: Provider = 'openai';
@@ -1097,6 +1052,11 @@
             status,
             tracking: {
               ...newTracking(entry.tracking, entry.addedAt),
+              appliedOn:
+                status === 'Applied' && entry.status !== 'Applied'
+                  ? newTracking(entry.tracking, entry.addedAt).appliedOn ||
+                    new Date().toISOString().slice(0, 10)
+                  : newTracking(entry.tracking, entry.addedAt).appliedOn,
               activity: [
                 {
                   id: crypto.randomUUID(),
@@ -1225,6 +1185,7 @@
   }
 
   function removeJob(jobId: string): void {
+    if (!window.confirm('Remove this saved job and its local application workspace?')) return;
     jobs = jobs.filter((job) => job.id !== jobId);
     persistJobs();
   }
@@ -1340,6 +1301,7 @@
   }
 
   function openLetter(job: Job): void {
+    if (generatingLetter || applicationChatBusy) return;
     activeJobId = job.id;
     letterDescription = job.description || '';
     letterStartingLetter = job.coverLetter?.startingLetter || '';
@@ -1352,7 +1314,100 @@
       letterProvider = job.coverLetter.provider;
     }
     letterStatus = '';
-    letterDialog.showModal();
+    applicationChatMessages = job.applicationChat?.messages || [];
+    applicationChatProvider = job.applicationChat?.provider || letterProvider;
+    applicationChatInput = '';
+    applicationChatStatus = '';
+  }
+
+  function closeLetter(): void {
+    activeJobId = null;
+  }
+
+  function persistApplicationChat(): void {
+    if (!activeJobId) return;
+    const session: ApplicationChatSession = {
+      messages: applicationChatMessages.slice(-30),
+      updatedAt: new Date().toISOString(),
+      provider: applicationChatProvider,
+    };
+    jobs = jobs.map((entry) =>
+      entry.id === activeJobId ? { ...entry, applicationChat: session } : entry,
+    );
+    persistJobs();
+  }
+
+  async function sendApplicationChat(): Promise<void> {
+    const job = jobs.find((entry) => entry.id === activeJobId);
+    const message = applicationChatInput.trim();
+    if (!job || !message) return;
+    applicationChatBusy = true;
+    applicationChatStatus = 'Thinking about this role…';
+    const messages = [...applicationChatMessages, { role: 'user' as const, content: message }];
+    applicationChatMessages = messages;
+    applicationChatInput = '';
+    try {
+      const response = await fetch('/api/application-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: applicationChatProvider,
+          profile: {
+            name: limitText(profile.name, 200),
+            roles: limitText(profile.roles, 500),
+            location: limitText(profile.location, 300),
+            workStyle: limitText(profile.workStyle, 100),
+            skills: limitText(profile.skills, 1_000),
+            experience: limitText(profile.experience, 2_000),
+            resume: limitText(profile.resume, 12_000),
+          },
+          job: {
+            title: job.title,
+            company: job.company,
+            description: limitText(job.description, 12_000),
+          },
+          applicationContext: limitText(
+            [job.research?.notes, job.research?.questions, job.research?.followUps]
+              .filter(Boolean)
+              .join('\n\n'),
+            8_000,
+          ),
+          messages: messages.slice(-20),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'The application chat could not reply.');
+      applicationChatMessages = [
+        ...messages,
+        { role: 'assistant' as const, content: String(data.reply) },
+      ].slice(-30);
+      persistApplicationChat();
+      applicationChatStatus = 'Saved in this browser.';
+    } catch (error) {
+      applicationChatMessages = applicationChatMessages.filter((item) => item !== messages.at(-1));
+      applicationChatInput = message;
+      applicationChatStatus = errorMessage(error, 'Could not connect to the AI service.');
+    } finally {
+      applicationChatBusy = false;
+    }
+  }
+
+  function clearApplicationChat(): void {
+    if (
+      !applicationChatMessages.length ||
+      !window.confirm('Clear this application-context chat from this browser?')
+    )
+      return;
+    applicationChatMessages = [];
+    persistApplicationChat();
+    jobs = jobs.map((entry) => {
+      if (entry.id !== activeJobId) return entry;
+      const updated = { ...entry };
+      delete updated.applicationChat;
+      return updated;
+    });
+    persistJobs();
+    applicationChatStatus = 'Application chat cleared from this browser.';
   }
 
   function limitText(value: string, maxLength: number): string {
@@ -2293,6 +2348,227 @@
                         {/if}
                       </section>
                     {/if}
+                    {#if activeJobId === job.id}
+                      <section
+                        class="job-application-studio"
+                        aria-label={`Application studio for ${job.title}`}
+                      >
+                        <div class="workspace-heading">
+                          <div>
+                            <p class="eyebrow">APPLICATION STUDIO</p>
+                            <h4>Prepare for <em>{job.company}</em></h4>
+                          </div>
+                          <button
+                            class="text-button"
+                            type="button"
+                            disabled={generatingLetter || applicationChatBusy}
+                            onclick={closeLetter}>Close studio</button
+                          >
+                        </div>
+                        <p class="workspace-privacy">
+                          The selected provider receives your profile, this job description, your
+                          application-context chat, and any user-authored context you include.
+                          Everything here is kept in this browser.
+                        </p>
+                        <div class="workspace-grid">
+                          <section class="workspace-section">
+                            <h4>Cover letter</h4>
+                            <label class="field"
+                              ><span>AI provider</span><select bind:value={letterProvider}>
+                                {#each providers as provider (provider)}<option
+                                    value={provider}
+                                    disabled={!providerSettings[provider].configured}
+                                    >{providerNames[provider]}{providerSettings[provider].configured
+                                      ? ''
+                                      : ' (no key)'}</option
+                                  >{/each}
+                              </select></label
+                            >
+                            <label class="field"
+                              ><span>Job description</span><textarea
+                                rows="5"
+                                bind:value={letterDescription}
+                                oninput={persistLetterSession}
+                              ></textarea></label
+                            >
+                            <label class="field"
+                              ><span>Starting letter (optional)</span><textarea
+                                rows="5"
+                                maxlength="15000"
+                                bind:value={letterStartingLetter}
+                                oninput={persistLetterSession}
+                              ></textarea></label
+                            >
+                            {#if baseLetters.length}
+                              <div class="base-letter-picker">
+                                <strong>Reusable base letters</strong>
+                                <ul class="base-letter-list">
+                                  {#each baseLetters as base (base.id)}<li>
+                                      <span
+                                        ><strong>{base.name}</strong><small
+                                          >{base.sourceJobTitle || 'Saved in this browser'}</small
+                                        ></span
+                                      ><button
+                                        class="text-button"
+                                        type="button"
+                                        onclick={() => useBaseLetter(base)}>Use</button
+                                      >
+                                    </li>{/each}
+                                </ul>
+                              </div>
+                            {/if}
+                            <div class="dialog-actions">
+                              <span class="status-message" role="status">{letterStatus}</span
+                              ><button
+                                class="button button-dark"
+                                type="button"
+                                disabled={generatingLetter ||
+                                  !providerSettings[letterProvider].configured}
+                                onclick={() => generateLetter()}
+                                >{generatingLetter ? 'Writing…' : 'Generate letter ✳'}</button
+                              >
+                            </div>
+                            <label class="field"
+                              ><span>Current draft</span><textarea
+                                rows="10"
+                                maxlength="15000"
+                                bind:this={letterResultField}
+                                bind:value={letterResult}
+                                oninput={persistLetterSession}
+                              ></textarea></label
+                            >
+                            <form
+                              class="letter-revision-form"
+                              onsubmit={(event) => {
+                                event.preventDefault();
+                                void generateLetter(true);
+                              }}
+                            >
+                              <label class="field"
+                                ><span>Ask for a change</span><textarea
+                                  rows="3"
+                                  maxlength="2500"
+                                  bind:value={letterRevisionRequest}
+                                ></textarea></label
+                              >
+                              <div class="dialog-actions">
+                                <button
+                                  class="button button-light"
+                                  type="submit"
+                                  disabled={generatingLetter || !letterResult.trim()}
+                                  >Adjust letter</button
+                                >{#if letterMessages.length || letterStartingLetter || letterResult}<button
+                                    class="text-button"
+                                    type="button"
+                                    disabled={generatingLetter}
+                                    onclick={clearLetterSession}>Clear letter session</button
+                                  >{/if}
+                              </div>
+                            </form>
+                            {#if letterVersions.length}<details class="letter-versions">
+                                <summary>Generated versions ({letterVersions.length})</summary>
+                                <ul>
+                                  {#each [...letterVersions].reverse() as version (version.id)}<li>
+                                      <span
+                                        ><strong
+                                          >{new Date(version.createdAt).toLocaleString()}</strong
+                                        ><small>{version.request}</small></span
+                                      ><button
+                                        class="text-button"
+                                        type="button"
+                                        onclick={() => restoreLetterVersion(version)}
+                                        >Restore</button
+                                      >
+                                    </li>{/each}
+                                </ul>
+                              </details>{/if}
+                            <div class="letter-result-actions">
+                              <button
+                                class="text-button"
+                                type="button"
+                                onclick={promoteCurrentLetter}>Save as base ✳</button
+                              ><button class="text-button" type="button" onclick={copyLetter}
+                                >Copy</button
+                              ><button class="text-button" type="button" onclick={downloadLetter}
+                                >Download .txt ↓</button
+                              >
+                            </div>
+                          </section>
+                          <section class="workspace-section application-chat">
+                            <h4>Application-context chat</h4>
+                            <p class="field-hint">
+                              Ask about the role or practise answers to likely application
+                              questions. Verify every answer against your own experience.
+                            </p>
+                            <label class="field"
+                              ><span>AI provider</span><select bind:value={applicationChatProvider}
+                                ><option
+                                  value="openai"
+                                  disabled={!providerSettings.openai.configured}>OpenAI</option
+                                ><option
+                                  value="gemini"
+                                  disabled={!providerSettings.gemini.configured}
+                                  >Google Gemini</option
+                                ><option
+                                  value="anthropic"
+                                  disabled={!providerSettings.anthropic.configured}
+                                  >Anthropic Claude</option
+                                ></select
+                              ></label
+                            >
+                            {#if applicationChatMessages.length}<div
+                                class="application-chat-messages"
+                              >
+                                {#each applicationChatMessages as message, index (`${message.role}-${index}`)}<article
+                                    class:letter-message-user={message.role === 'user'}
+                                    class="letter-message"
+                                  >
+                                    <strong
+                                      >{message.role === 'user'
+                                        ? 'You'
+                                        : 'Application coach'}</strong
+                                    >
+                                    <p>{message.content}</p>
+                                  </article>{/each}
+                              </div>{/if}
+                            <form
+                              class="letter-revision-form"
+                              onsubmit={(event) => {
+                                event.preventDefault();
+                                void sendApplicationChat();
+                              }}
+                            >
+                              <label class="field"
+                                ><span>Your question or practice prompt</span><textarea
+                                  rows="5"
+                                  maxlength="2500"
+                                  bind:value={applicationChatInput}
+                                  placeholder="What does this role seem to prioritise? Practise: tell me about a project relevant to it."
+                                ></textarea></label
+                              >
+                              <div class="dialog-actions">
+                                <span class="status-message" role="status"
+                                  >{applicationChatStatus}</span
+                                ><button
+                                  class="button button-dark"
+                                  type="submit"
+                                  disabled={applicationChatBusy ||
+                                    !applicationChatInput.trim() ||
+                                    !providerSettings[applicationChatProvider].configured}
+                                  >{applicationChatBusy ? 'Thinking…' : 'Ask coach'}</button
+                                >
+                              </div>
+                            </form>
+                            {#if applicationChatMessages.length}<button
+                                class="text-button"
+                                type="button"
+                                disabled={applicationChatBusy}
+                                onclick={clearApplicationChat}>Clear application chat</button
+                              >{/if}
+                          </section>
+                        </div>
+                      </section>
+                    {/if}
                     <details class="job-workspace">
                       <summary>Research &amp; tracking</summary>
                       <p class="workspace-privacy">
@@ -2466,8 +2742,14 @@
                           rel="noopener noreferrer">View listing ↗</a
                         >
                       {/if}
-                      <button class="job-action-link" type="button" onclick={() => openLetter(job)}
-                        >Draft cover letter ✳</button
+                      <button
+                        class="job-action-link"
+                        type="button"
+                        disabled={generatingLetter || applicationChatBusy}
+                        onclick={() => openLetter(job)}
+                        >{activeJobId === job.id
+                          ? 'Hide application studio'
+                          : 'Open application studio'} ✳</button
                       >
                       <button
                         class="job-action-link"
@@ -2973,7 +3255,7 @@
   </div>
 </div>
 
-<dialog class="letter-dialog" bind:this={letterDialog} aria-labelledby="letter-title">
+<dialog class="letter-dialog" aria-labelledby="letter-title">
   <form method="dialog" class="dialog-close-form">
     <button class="dialog-close" aria-label="Close">×</button>
   </form>
@@ -3084,7 +3366,6 @@
       rows="10"
       maxlength="15000"
       placeholder="Your cover letter will appear here. You can edit it before asking the AI to adjust it."
-      bind:this={letterResultField}
       bind:value={letterResult}
       oninput={persistLetterSession}
     ></textarea></label

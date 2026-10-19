@@ -171,6 +171,11 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .recommendation-controls .field { width: min(190px, 100%); }
 .recommendation-controls .field-hint { padding-bottom: 10px; }
 .job-card { padding: 15px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+.job-application-studio { margin: 16px 0 0 47px; padding: 16px; border: 1px solid #cfe0d4; border-radius: 9px; background: #f8fbf8; }
+.job-application-studio h4 { margin: 4px 0 0; color: var(--ink); font-size: 15px; font-weight: 500; }
+.job-application-studio h4 em { color: var(--green); font-family: Georgia, serif; font-weight: 500; }
+.job-application-studio .workspace-grid { margin-top: 14px; }
+.application-chat-messages { display: grid; max-height: 360px; gap: 8px; margin: 10px 0; overflow: auto; }
 .job-card-top { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .job-company { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .job-company h3 { overflow: hidden; margin: 0 0 3px; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -334,7 +339,7 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .section-heading h2 { font-size: 17px; }
   .text-button { font-size: 10px; }
   .search-panel, .add-prompt { gap: 10px; padding: 15px; }
-  .job-workspace, .job-card-footer, .job-notes, .job-assessment { margin-left: 0; }
+  .job-workspace, .job-card-footer, .job-notes, .job-assessment, .job-application-studio { margin-left: 0; }
   .research-link-form { grid-template-columns: 1fr; }
   .panel-icon { width: 33px; height: 33px; }
   .form-grid { grid-template-columns: 1fr; padding-left: 0; }

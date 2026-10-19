@@ -65,6 +65,7 @@ This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your
 - Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.
 - Creates a per-job, browser-local cover-letter session using OpenAI, Gemini, or Anthropic. Start from scratch or paste a letter to build on, then ask for revisions; the selected provider receives the profile, job description, starting letter, current draft, and submitted revision request. Drafts can be edited, copied, downloaded, or cleared locally.
 - Lets you save a deliberately chosen draft as a named reusable base letter. A later job can copy a selected base into its own starting-letter field; each job keeps its own provenance and edits. AI-generated drafts are retained as immutable local versions that can be restored with confirmation, while user edits remain separate from generated history.
+- Opens an application studio directly inside each saved-job card. It combines the cover-letter workspace with a browser-local application-context chat for role questions and practice answers. The chat sends only the saved role, profile, resume, and user-confirmed application context to the selected provider; it must not invent experience or company facts. Changing a role to **Applied** fills today's date only when no applied date exists, so later manual edits remain intact. Clearing the letter session, application chat, assessments, or restoring a version requires confirmation.
 
 Job discovery is intentionally limited to the public APIs described above. JobFinder does not log into, crawl, or scrape LinkedIn, Indeed, or other job boards. It does not automate applications; open the original listing and review/apply there yourself. Resume upload reads `.txt`, `.md`, and `.tex` files as text; paste text from other resume formats.
 
@@ -87,9 +88,9 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 
 1. Add focused UI regression, migration, and in-browser acceptance coverage for reusable bases, provenance, generated-version restoration, and destructive confirmations.
 2. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
-3. Add a small, embedded application-context chat beside each saved job so the user can ask questions about the role and practice answers to likely questions on the application site. Keep the job description, profile, and any user-confirmed application context within the existing provider-sharing boundary.
-4. Move the cover-letter workspace from a modal into the saved-job page so the letter, application chat, research, and tracker can be used together without losing context.
-5. When a saved job changes to **Applied**, automatically set its Applied date to today's date; preserve later manual edits to that date.
+3. Add a small, embedded application-context chat beside each saved job so the user can ask questions about the role and practice answers to likely questions on the application site. Keep the job description, profile, and any user-confirmed application context within the existing provider-sharing boundary. **Implemented.**
+4. Move the cover-letter workspace from a modal into the saved-job page so the letter, application chat, research, and tracker can be used together without losing context. **Implemented.**
+5. When a saved job changes to **Applied**, automatically set its Applied date to today's date; preserve later manual edits to that date. **Implemented.**
 
 ### Later: keep the CV current
 
