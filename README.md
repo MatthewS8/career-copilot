@@ -64,6 +64,7 @@ This is not a mailbox connection: JobFinder does not sign in to LinkedIn or your
 - Tracks each saved role locally with saved, applied, follow-up, and interview dates; a next action, deadline, and lightweight activity history. Status changes are recorded in that history.
 - Lets you manually paste a job offer's title, company, link, and description into **Saved jobs**. The pasted description can be used for a tailored cover letter; JobFinder never fetches the linked LinkedIn page.
 - Creates a per-job, browser-local cover-letter session using OpenAI, Gemini, or Anthropic. Start from scratch or paste a letter to build on, then ask for revisions; the selected provider receives the profile, job description, starting letter, current draft, and submitted revision request. Drafts can be edited, copied, downloaded, or cleared locally.
+- Lets you save a deliberately chosen draft as a named reusable base letter. A later job can copy a selected base into its own starting-letter field; each job keeps its own provenance and edits. AI-generated drafts are retained as immutable local versions that can be restored with confirmation, while user edits remain separate from generated history.
 
 Job discovery is intentionally limited to the public APIs described above. JobFinder does not log into, crawl, or scrape LinkedIn, Indeed, or other job boards. It does not automate applications; open the original listing and review/apply there yourself. Resume upload reads `.txt`, `.md`, and `.tex` files as text; paste text from other resume formats.
 
@@ -80,13 +81,15 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 - Recommended roles receive an AI match score when they go through the matching flow. Saved roles can hold the listing text, personal notes, and an application status.
 - Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, strengths, concerns, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.
 - Saved roles include a browser-local research and application-tracking workspace for user-authored notes, links, questions, contacts, follow-ups, dates, next actions, deadlines, and activity history.
-- A saved role has a local, iterative cover-letter session. You can supply a starting letter, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation and draft reopen with that job.
+- A saved role has a local, iterative cover-letter session. You can supply a starting letter or copy a reusable base, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation, generated versions, provenance, and draft reopen with that job.
 
-### Next: make strong letters reusable
+### Next: acceptance and polish
 
-1. Let the user promote a deliberately chosen finished letter to a reusable **base letter**. Future letters may start from a selected base, but the user must choose it; preserve version history and never silently replace a base or overwrite a draft.
-2. Let users compare and restore earlier AI-generated draft versions within a job's existing conversation. Keep user edits distinct from generated versions.
-3. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
+1. Add focused UI regression, migration, and in-browser acceptance coverage for reusable bases, provenance, generated-version restoration, and destructive confirmations.
+2. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
+3. Add a small, embedded application-context chat beside each saved job so the user can ask questions about the role and practice answers to likely questions on the application site. Keep the job description, profile, and any user-confirmed application context within the existing provider-sharing boundary.
+4. Move the cover-letter workspace from a modal into the saved-job page so the letter, application chat, research, and tracker can be used together without losing context.
+5. When a saved job changes to **Applied**, automatically set its Applied date to today's date; preserve later manual edits to that date.
 
 ### Later: keep the CV current
 

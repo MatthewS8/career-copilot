@@ -19,8 +19,25 @@
     startingLetter: string;
     draft: string;
     messages: ChatMessage[];
+    versions: GeneratedLetterVersion[];
+    baseLetterId?: string;
+    baseLetterName?: string;
     updatedAt: string;
     provider: Provider;
+  };
+  type GeneratedLetterVersion = {
+    id: string;
+    draft: string;
+    createdAt: string;
+    request: string;
+  };
+  type BaseLetter = {
+    id: string;
+    name: string;
+    text: string;
+    createdAt: string;
+    sourceJobId?: string;
+    sourceJobTitle?: string;
   };
   type ResearchLink = { id: string; label: string; url: string };
   type JobResearch = {
@@ -97,6 +114,7 @@
   const SUGGESTIONS_KEY = 'jobfinder.suggestions.v1';
   const HIDDEN_JOBS_KEY = 'jobfinder.hidden-job-urls.v1';
   const ONBOARDING_KEY = 'jobfinder.onboarding.v1';
+  const BASE_LETTERS_KEY = 'jobfinder.base-letters.v1';
   const statuses: JobStatus[] = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
   const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
   const providerNames = {
@@ -130,6 +148,70 @@
 
   function dateValue(value: unknown): string {
     return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+  }
+
+  function newLetterVersions(value: unknown): GeneratedLetterVersion[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter(
+        (version): version is Partial<GeneratedLetterVersion> =>
+          Boolean(version && typeof version === 'object'),
+      )
+      .map((version) => ({
+        id: textValue(version.id) || crypto.randomUUID(),
+        draft: textValue(version.draft).slice(0, 15_000),
+        createdAt: textValue(version.createdAt) || new Date().toISOString(),
+        request: textValue(version.request).slice(0, 2_500),
+      }))
+      .filter((version) => version.draft)
+      .slice(-30);
+  }
+
+  function newCoverLetter(value: unknown): CoverLetterSession | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const session = value as Partial<CoverLetterSession>;
+    if (!textValue(session.startingLetter) && !textValue(session.draft) && !Array.isArray(session.messages))
+      return undefined;
+    return {
+      startingLetter: textValue(session.startingLetter).slice(0, 15_000),
+      draft: textValue(session.draft).slice(0, 15_000),
+      messages: Array.isArray(session.messages)
+        ? session.messages
+            .filter(
+              (message): message is ChatMessage =>
+                Boolean(
+                  message &&
+                    typeof message === 'object' &&
+                    (message.role === 'user' || message.role === 'assistant') &&
+                    typeof message.content === 'string',
+                ),
+            )
+            .slice(-20)
+        : [],
+      versions: newLetterVersions(session.versions),
+      baseLetterId: textValue(session.baseLetterId) || undefined,
+      baseLetterName: textValue(session.baseLetterName) || undefined,
+      updatedAt: textValue(session.updatedAt) || new Date().toISOString(),
+      provider: providers.includes(session.provider as Provider)
+        ? (session.provider as Provider)
+        : 'openai',
+    };
+  }
+
+  function migrateBaseLetters(value: unknown): BaseLetter[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((entry): entry is Partial<BaseLetter> => Boolean(entry && typeof entry === 'object'))
+      .map((entry) => ({
+        id: textValue(entry.id) || crypto.randomUUID(),
+        name: textValue(entry.name).slice(0, 120),
+        text: textValue(entry.text).slice(0, 15_000),
+        createdAt: textValue(entry.createdAt) || new Date().toISOString(),
+        sourceJobId: textValue(entry.sourceJobId) || undefined,
+        sourceJobTitle: textValue(entry.sourceJobTitle) || undefined,
+      }))
+      .filter((entry) => entry.name && entry.text)
+      .slice(-50);
   }
 
   function newResearch(value: Partial<JobResearch> = {}): JobResearch {
@@ -201,6 +283,7 @@
           notes: textValue(job.notes),
           status: statuses.includes(job.status as JobStatus) ? (job.status as JobStatus) : 'Saved',
           addedAt,
+          coverLetter: newCoverLetter(job.coverLetter),
           research: newResearch(job.research),
           tracking: newTracking(job.tracking, addedAt),
         },
@@ -211,6 +294,7 @@
   const storedProfile = readStorage<Partial<Profile>>(PROFILE_KEY, {});
   let profile: Profile = { ...emptyProfile, ...storedProfile };
   let jobs = migrateJobs(readStorage<unknown>(JOBS_KEY, []));
+  let baseLetters = migrateBaseLetters(readStorage<unknown>(BASE_LETTERS_KEY, []));
   let chatMessages = readStorage<ChatMessage[]>(CHAT_KEY, []);
   let suggestions = readStorage<Suggestion[]>(SUGGESTIONS_KEY, []);
   let hiddenJobUrls = new SvelteSet(
@@ -254,6 +338,8 @@
   let letterStartingLetter = '';
   let letterResult = '';
   let letterMessages: ChatMessage[] = [];
+  let letterVersions: GeneratedLetterVersion[] = [];
+  let letterBaseId = '';
   let letterRevisionRequest = '';
   let letterStatus = '';
   let generatingLetter = false;
@@ -1248,6 +1334,8 @@
     letterStartingLetter = job.coverLetter?.startingLetter || '';
     letterResult = job.coverLetter?.draft || '';
     letterMessages = job.coverLetter?.messages || [];
+    letterVersions = job.coverLetter?.versions || [];
+    letterBaseId = job.coverLetter?.baseLetterId || '';
     letterRevisionRequest = '';
     if (job.coverLetter?.provider && providers.includes(job.coverLetter.provider)) {
       letterProvider = job.coverLetter.provider;
@@ -1270,6 +1358,9 @@
               startingLetter: letterStartingLetter,
               draft: letterResult,
               messages: letterMessages.slice(-20),
+              versions: letterVersions.slice(-30),
+              baseLetterId: letterBaseId || undefined,
+              baseLetterName: baseLetters.find((base) => base.id === letterBaseId)?.name,
               updatedAt: new Date().toISOString(),
               provider: letterProvider,
             },
@@ -1277,6 +1368,62 @@
         : entry,
     );
     persistJobs();
+  }
+
+  function useBaseLetter(base: BaseLetter): void {
+    if (
+      (letterStartingLetter || letterResult) &&
+      !window.confirm('Use this base as the starting letter? Your current starting text will be replaced; your draft will remain unchanged.')
+    )
+      return;
+    letterStartingLetter = base.text;
+    letterBaseId = base.id;
+    letterStatus = `Using “${base.name}” as the starting letter.`;
+    persistLetterSession();
+  }
+
+  function promoteCurrentLetter(): void {
+    const text = letterResult.trim();
+    if (!text) {
+      letterStatus = 'Write or generate a final draft before saving a base letter.';
+      return;
+    }
+    const name = window.prompt('Name this reusable base letter:');
+    if (!name?.trim()) return;
+    const job = jobs.find((entry) => entry.id === activeJobId);
+    const base: BaseLetter = {
+      id: crypto.randomUUID(),
+      name: name.trim().slice(0, 120),
+      text,
+      createdAt: new Date().toISOString(),
+      sourceJobId: job?.id,
+      sourceJobTitle: job ? `${job.title} · ${job.company}` : undefined,
+    };
+    baseLetters = [...baseLetters, base].slice(-50);
+    localStorage.setItem(BASE_LETTERS_KEY, JSON.stringify(baseLetters));
+    letterStatus = `Saved “${base.name}” as a reusable base. Existing bases were not changed.`;
+  }
+
+  function restoreLetterVersion(version: GeneratedLetterVersion): void {
+    if (
+      letterResult !== version.draft &&
+      !window.confirm('Restore this generated version? Your current draft will be replaced, but this version will remain saved.')
+    )
+      return;
+    if (letterResult && letterResult !== version.draft) {
+      letterVersions = [
+        ...letterVersions,
+        {
+          id: crypto.randomUUID(),
+          draft: letterResult,
+          createdAt: new Date().toISOString(),
+          request: 'User-edited draft saved before restoring an earlier version.',
+        },
+      ].slice(-30);
+    }
+    letterResult = version.draft;
+    persistLetterSession();
+    letterStatus = 'Earlier generated version restored. You can still edit it before saving.';
   }
 
   async function generateLetter(revision = false): Promise<void> {
@@ -1340,6 +1487,15 @@
           ? 'Create a tailored letter from my starting letter.'
           : 'Create a tailored first draft.');
       letterResult = String(data.letter);
+      letterVersions = [
+        ...letterVersions,
+        {
+          id: crypto.randomUUID(),
+          draft: letterResult,
+          createdAt: new Date().toISOString(),
+          request: instruction,
+        },
+      ].slice(-30);
       letterMessages = [
         ...letterMessages.slice(-18),
         { role: 'user', content: instruction },
@@ -1371,6 +1527,8 @@
     letterStartingLetter = '';
     letterResult = '';
     letterMessages = [];
+    letterVersions = [];
+    letterBaseId = '';
     letterRevisionRequest = '';
     letterStatus = 'Cover-letter session cleared from this browser.';
   }
@@ -2831,6 +2989,21 @@
         oninput={persistLetterSession}
       ></textarea></label
     >
+    {#if baseLetters.length}
+      <div class="base-letter-picker">
+        <div class="workspace-heading">
+          <div><strong>Reusable base letters</strong><small>Choose one when it helps; this job keeps its own copy.</small></div>
+        </div>
+        <ul class="base-letter-list">
+          {#each baseLetters as base (base.id)}
+            <li>
+              <div><strong>{base.name}</strong><small>{base.sourceJobTitle || 'Saved in this browser'}</small></div>
+              <button class="text-button" type="button" onclick={() => useBaseLetter(base)}>Use as starting letter</button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
   </div>
   <div class="dialog-actions">
     <span class="status-message" id="letter-status" role="status">{letterStatus}</span><button
@@ -2853,6 +3026,19 @@
           </article>
         {/each}
       </div>
+    {/if}
+    {#if letterVersions.length}
+      <details class="letter-versions">
+        <summary>Generated versions ({letterVersions.length})</summary>
+        <ul>
+          {#each [...letterVersions].reverse() as version (version.id)}
+            <li>
+              <div><strong>{new Date(version.createdAt).toLocaleString()}</strong><small>{version.request}</small></div>
+              <button class="text-button" type="button" onclick={() => restoreLetterVersion(version)}>Restore</button>
+            </li>
+          {/each}
+        </ul>
+      </details>
     {/if}
   </section>
   <label class="field letter-result-field" for="letter-result"
@@ -2899,7 +3085,9 @@
     </div>
   </form>
   <div class="letter-result-actions">
-    <button class="text-button" id="copy-letter" type="button" onclick={copyLetter}
+    <button class="text-button" id="save-base-letter" type="button" onclick={promoteCurrentLetter}
+      >Save as base <span aria-hidden="true">✳</span></button
+    ><button class="text-button" id="copy-letter" type="button" onclick={copyLetter}
       >Copy letter <span aria-hidden="true">↗</span></button
     ><button class="text-button" id="download-letter" type="button" onclick={downloadLetter}
       >Download .txt <span aria-hidden="true">↓</span></button
