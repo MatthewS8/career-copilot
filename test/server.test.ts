@@ -610,6 +610,47 @@ test('sends a cover-letter prompt to the selected provider', async () => {
   }
 });
 
+test('proposes a grounded, reviewable resume update without persisting it', async () => {
+  const originalFetch = global.fetch;
+  await configureProvider('openai');
+  let outboundRequest: CapturedRequest | undefined;
+  mockFetch(async (url, options) => {
+    outboundRequest = { url, options };
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ resume: 'Reviewed resume draft' }) } }],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  });
+  try {
+    const response = await originalFetch(`${baseUrl}/api/resume-update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'openai',
+        profile: { name: 'Alex', resume: 'Original resume', experience: 'Built useful tools.' },
+        context: 'User-confirmed note: led a migration.',
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await responseJson(response), { resume: 'Reviewed resume draft' });
+    assert.ok(outboundRequest);
+    assert.match(outboundRequest.options.body, /Original resume/);
+    assert.match(outboundRequest.options.body, /User-confirmed note/);
+    assert.match(outboundRequest.options.body, /Do not invent or infer experience/);
+
+    const invalidResponse = await originalFetch(`${baseUrl}/api/resume-update`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai', profile: {} }),
+    });
+    assert.equal(invalidResponse.status, 400);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('application-context chat validates the transcript and keeps the prompt grounded', async () => {
   const oldKey = process.env.OPENAI_API_KEY;
   const originalFetch = global.fetch;

@@ -88,6 +88,7 @@
   };
   type AutofillProfileField = Exclude<keyof Profile, 'linkedin' | 'resume'>;
   type ChatMessage = { role: 'user' | 'assistant'; content: string };
+  type ResumeRevision = { id: string; original: string; acceptedAt: string };
   type Suggestion = {
     id: string;
     title: string;
@@ -119,6 +120,7 @@
   const HIDDEN_JOBS_KEY = 'jobfinder.hidden-job-urls.v1';
   const ONBOARDING_KEY = 'jobfinder.onboarding.v1';
   const BASE_LETTERS_KEY = 'jobfinder.base-letters.v1';
+  const RESUME_REVISIONS_KEY = 'jobfinder.resume-revisions.v1';
   const statuses: JobStatus[] = ['Saved', 'Applying', 'Applied', 'Interviewing', 'Archived'];
   const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
   const providerNames = {
@@ -289,6 +291,19 @@
     | 'onboarding' = onboardingStep < 4 ? 'onboarding' : 'dashboard';
   let jobFilter: 'all' | JobStatus = 'all';
   let profileStatus = '';
+  let resumeUpdateProvider: Provider = 'openai';
+  let resumeUpdateProposal = '';
+  let resumeUpdateStatus = '';
+  let proposingResumeUpdate = false;
+  let resumeRevisions = readStorage<ResumeRevision[]>(RESUME_REVISIONS_KEY, []).filter(
+    (revision): revision is ResumeRevision =>
+      Boolean(
+        revision &&
+        typeof revision.id === 'string' &&
+        typeof revision.original === 'string' &&
+        typeof revision.acceptedAt === 'string',
+      ),
+  );
   let activeJobId: string | null = null;
   let letterResultField: HTMLTextAreaElement;
   let letterDescription = '';
@@ -993,6 +1008,110 @@
   async function autofillLinkedInText(): Promise<void> {
     const textarea = document.querySelector<HTMLTextAreaElement>('#linkedin-profile-text');
     if (textarea) await autofillProfile('linkedin', textarea.value);
+  }
+
+  function resumeUpdateContext(): string {
+    const recruiterFacts = chatMessages
+      .filter((message) => message.role === 'user')
+      .slice(-10)
+      .map((message) => message.content)
+      .join('\n');
+    const jobResearch = jobs
+      .slice(0, 10)
+      .map((job) => {
+        const research = newResearch(job.research);
+        const tracking = newTracking(job.tracking, job.addedAt);
+        return [
+          `Saved role: ${job.title} at ${job.company}`,
+          research.notes && `Research notes: ${research.notes}`,
+          research.questions && `Questions: ${research.questions}`,
+          research.contacts && `Contacts: ${research.contacts}`,
+          research.followUps && `Follow-ups: ${research.followUps}`,
+          tracking.nextAction && `Next action: ${tracking.nextAction}`,
+          tracking.activity.map((activity) => `Activity: ${activity.text}`).join('\n'),
+        ]
+          .filter(Boolean)
+          .join('\n');
+      })
+      .filter(Boolean)
+      .join('\n\n');
+    return limitText([recruiterFacts, jobResearch].filter(Boolean).join('\n\n'), 20_000);
+  }
+
+  async function proposeResumeUpdate(): Promise<void> {
+    if (!profile.resume.trim()) {
+      resumeUpdateStatus = 'Add your current resume text before requesting an update.';
+      return;
+    }
+    proposingResumeUpdate = true;
+    resumeUpdateStatus = 'Preparing a reviewable resume proposal…';
+    try {
+      const response = await fetch('/api/resume-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: resumeUpdateProvider,
+          profile: { ...profile, resume: limitText(profile.resume, 20_000) },
+          context: resumeUpdateContext(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not propose a resume update.');
+      resumeUpdateProposal = String(data.resume || '');
+      resumeUpdateStatus =
+        'Review and edit the proposal. It will not replace your resume until you accept it.';
+    } catch (error) {
+      resumeUpdateStatus = errorMessage(error, 'Could not connect to the AI service.');
+    } finally {
+      proposingResumeUpdate = false;
+    }
+  }
+
+  async function acceptResumeUpdate(): Promise<void> {
+    const proposal = resumeUpdateProposal.trim();
+    if (
+      !proposal ||
+      !window.confirm(
+        'Replace your saved resume with this reviewed proposal? Your current resume will remain recoverable in this browser.',
+      )
+    )
+      return;
+    resumeRevisions = [
+      ...resumeRevisions,
+      { id: crypto.randomUUID(), original: profile.resume, acceptedAt: new Date().toISOString() },
+    ].slice(-20);
+    localStorage.setItem(RESUME_REVISIONS_KEY, JSON.stringify(resumeRevisions));
+    profile.resume = proposal;
+    profile = profile;
+    resumeUpdateProposal = '';
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    try {
+      await saveProfileToServer(profile);
+      resumeUpdateStatus = 'Resume updated. Your prior version is recoverable in this browser.';
+    } catch (error) {
+      resumeUpdateStatus = `${errorMessage(error, 'Could not save the profile.')} Your browser copy was updated.`;
+    }
+  }
+
+  function restoreResumeRevision(revision: ResumeRevision): void {
+    if (
+      !window.confirm(
+        'Restore this earlier resume version? Your current resume will stay recoverable.',
+      )
+    )
+      return;
+    if (profile.resume !== revision.original) {
+      resumeRevisions = [
+        ...resumeRevisions,
+        { id: crypto.randomUUID(), original: profile.resume, acceptedAt: new Date().toISOString() },
+      ].slice(-20);
+      localStorage.setItem(RESUME_REVISIONS_KEY, JSON.stringify(resumeRevisions));
+    }
+    profile.resume = revision.original;
+    profile = profile;
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    resumeUpdateStatus =
+      'Earlier resume restored in this browser. Save your profile when you are ready.';
   }
 
   function linkFor(url: string): string {
@@ -2160,6 +2279,76 @@
                   onclick={() => autofillProfile('resume', profile.resume)}
                   >Autofill from resume <span aria-hidden="true">✳</span></button
                 >
+              </div>
+              <div class="resume-update-workspace">
+                <div>
+                  <strong>Propose CV updates</strong>
+                  <p>
+                    Create a draft from your current resume, profile, your own recruiter messages,
+                    and saved-job research/tracking. The provider receives that selected local
+                    context only to make this proposal. Review every word before accepting; it never
+                    changes your resume automatically.
+                  </p>
+                </div>
+                <div class="autofill-controls">
+                  <label class="field"
+                    ><span>AI provider</span><select bind:value={resumeUpdateProvider}
+                      >{#each providers as provider (provider)}<option
+                          value={provider}
+                          disabled={!providerSettings[provider].configured}
+                          >{providerNames[provider]}{providerSettings[provider].configured
+                            ? ''
+                            : ' (no key)'}</option
+                        >{/each}</select
+                    ></label
+                  ><button
+                    class="button button-dark"
+                    type="button"
+                    disabled={proposingResumeUpdate ||
+                      !providerSettings[resumeUpdateProvider].configured}
+                    onclick={proposeResumeUpdate}
+                    >{proposingResumeUpdate ? 'Preparing…' : 'Propose resume update ✳'}</button
+                  >
+                </div>
+                {#if resumeUpdateProposal}
+                  <label class="field resume-proposal"
+                    ><span>Reviewable proposed resume</span><textarea
+                      rows="12"
+                      maxlength="20000"
+                      bind:value={resumeUpdateProposal}
+                    ></textarea><small class="field-hint"
+                      >Edit this proposal freely. Accepting it replaces only the resume text; the
+                      previous version stays recoverable in this browser.</small
+                    ></label
+                  >
+                  <div class="dialog-actions">
+                    <button class="button button-dark" type="button" onclick={acceptResumeUpdate}
+                      >Accept reviewed resume</button
+                    ><button
+                      class="text-button"
+                      type="button"
+                      onclick={() => {
+                        resumeUpdateProposal = '';
+                        resumeUpdateStatus = 'Proposal discarded. Your resume was not changed.';
+                      }}>Discard proposal</button
+                    >
+                  </div>
+                {/if}
+                {#if resumeRevisions.length}
+                  <details class="resume-revisions">
+                    <summary>Recover earlier resume versions ({resumeRevisions.length})</summary>
+                    <ul>
+                      {#each [...resumeRevisions].reverse() as revision (revision.id)}<li>
+                          <span>{new Date(revision.acceptedAt).toLocaleString()}</span><button
+                            class="text-button"
+                            type="button"
+                            onclick={() => restoreResumeRevision(revision)}>Restore</button
+                          >
+                        </li>{/each}
+                    </ul>
+                  </details>
+                {/if}
+                <p class="status-message" role="status">{resumeUpdateStatus}</p>
               </div>
             </div>
             <div class="form-section linkedin-import-section">
