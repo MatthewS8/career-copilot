@@ -56,7 +56,7 @@ Requires Node.js 18.18 or newer.
 
 ### Local Node/npm installation
 
-This environment uses the user's local NVM installation. If `node` or `npm` is unavailable inside a restricted agent shell, run the command with access to the local machine installation (with user approval when required). The current installation is at `/home/matt/.nvm/versions/node/v26.8.2/bin`; prepend that directory to `PATH` when invoking commands manually if needed.
+This environment may not expose a Node.js/npm executable to the agent shell. If `node` or `npm` is unavailable, run checks with access to a local Node.js 18.18+ installation (with user approval when required).
 
 ```sh
 npm install
@@ -128,4 +128,4 @@ State any check that was not run and why. Test provider/network behavior with mo
 
 ## Repository State at Handoff
 
-The saved-job assessment and iterative cover-letter session are committed. The browser-local saved-job research/tracking and reusable-letter workspace are currently uncommitted in `README.md`, `public/styles.css`, and `src/App.svelte`; this `PROMPT.md` remains untracked. `npm run check` passed before the reusable-letter implementation; this environment currently has no Node/npm executable available for rerunning it. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.
+Saved-job assessment, research/tracking, application-context chat, embedded application studio, and reusable base-letter functionality are committed. This acceptance/polish pass removes the now-obsolete duplicate cover-letter modal from `src/App.svelte` and adds a built-app regression assertion in `test/server.test.ts`; these changes are currently uncommitted. The existing reusable-base migration and generated-version-restoration tests remain in that suite. The current agent shell has no Node/npm executable, so validation cannot be rerun here. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.

@@ -109,6 +109,11 @@ test('serves the app with security headers', async () => {
   assert.match(script, /Restore this generated version/);
   assert.match(script, /Clear this application-context chat from this browser/);
   assert.match(script, /Remove this saved job and its local application workspace/);
+  assert.doesNotMatch(
+    script,
+    /letter-title/,
+    'the cover-letter workspace must remain embedded in the saved-job application studio',
+  );
   const stylesheetPath = html.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
   assert.ok(stylesheetPath);
   assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
