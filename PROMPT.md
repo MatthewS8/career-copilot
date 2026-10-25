@@ -10,20 +10,24 @@ Read `PROMPT.md`, `README.md`, inspect `git status`, and inspect the relevant cu
 
 JobFinder is a personal job-search workspace built with Svelte 5, TypeScript, Vite, and a small Node.js HTTP server. It is meant to replace a scattered browser chat with a durable workspace where one person can establish their background and preferences, assess job leads, research opportunities, track applications, and iteratively prepare truthful cover letters.
 
-This is a local-first personal tool, not a multi-user hosted service. The frontend binds to loopback for development. The production server defaults to `127.0.0.1:3000`; it has no authentication. Keep it local and do not expose it to untrusted networks.
+This is a local-first, self-hostable job-search workspace. The production server defaults to `127.0.0.1:3000` so a local reverse proxy can expose it on a trusted LAN. It has first-account setup and persistent authenticated sessions; do not expose an HTTP deployment outside a trusted private network.
 
 ## Current Implementation
 
 - `src/App.svelte` contains the Svelte single-page app and its local state/persistence.
 - `server.ts` contains the Node HTTP API, encrypted provider-key storage, AI provider adapters, profile extraction, recruiter chat, public job-board fetching, and job matching.
+- `auth.ts` contains first-account setup, scrypt password hashing, hashed persistent sessions, and account lookup.
 - `public/styles.css` contains the app styles.
 - `test/server.test.ts` contains the Node test suite, including mocked provider and job-source requests.
-- `vite.config.mjs` proxies `/api` requests from Vite to `http://127.0.0.1:3000`, with `changeOrigin: true` so protected API-key writes work through the development server.
+- `vite.config.mjs` proxies `/api` requests from Vite to `http://127.0.0.1:3000`, preserves the original Host/Origin for canonical-host enforcement, and explicitly allows `jobs.home.arpa` in development.
 - `README.md` explains setup, privacy, resume import, AI recruiter/recommendations, permitted live-job verification, manual job-offer entry, and the boundary between public job APIs and manual search links.
+- `JOBFINDER_PUBLIC_URL` configures a canonical reverse-proxy URL (currently `http://jobs.home.arpa` for the user's LAN). Vite explicitly permits that development host and preserves the browser's Host/Origin while proxying APIs.
 
 ### Existing Features
 
 - Profile and resume upload/autofill. `.txt`, `.md`, and `.tex` are read as text in the browser; LaTeX is not rendered or compiled. LinkedIn profile content must be pasted by the user; the app does not fetch or scrape profiles.
+- First use presents an account-creation screen. The first account automatically adopts legacy `.data/profile.json` and encrypted provider-key files; its existing browser-local workspace is uploaded after sign-in. Account sessions use an HttpOnly, SameSite=Lax cookie with a 30-day rolling lifetime.
+- Signed-in workspaces are persisted per account on the server. Browser local storage remains a compatibility/migration cache, but profile, jobs, recommendations, chats, application workspaces, and preferences load from the account workspace so they are available at the canonical URL.
 - API-key settings for OpenAI, Gemini, and Anthropic. Provider keys are entered only through the website and saved encrypted at rest with AES-256-GCM in `.data/`. Saves are serialized and concurrent duplicate saves return HTTP 409. The UI hides the save input when configured.
 - AI recruiter chat (`POST /api/chat`) reviews profile/resume details, asks follow-up questions, and can suggest skills to add to the profile. Chat is stored in browser local storage.
 - Recruiter chat has clear/restart controls for its local conversation and unadded suggestions, confirms destructive actions, makes failed first turns retryable, and explains that the selected provider receives the current profile (including resume text) plus up to 30 recent messages. Switching providers warns before the next request is sent. Suggested skills are saved only when the user explicitly adds one.
@@ -46,7 +50,7 @@ Do not add LinkedIn or Indeed scraping. Their current terms prohibit unauthorize
 - Optional model overrides: `OPENAI_MODEL`, `GEMINI_MODEL`, `ANTHROPIC_MODEL`.
 - The server loads `.env` without overwriting explicitly supplied server settings. Provider keys are never read from environment variables.
 - `JOBFINDER_DATA_DIR` overrides the default `.data` directory. Keep `key-encryption.key` and `provider-keys.enc` together for backups; losing the encryption key makes saved keys unrecoverable.
-- The profile and resume are stored unencrypted in the server's `.data/profile.json`; chat, saved jobs, recommendations, hidden-job URLs, onboarding status, alert suggestions, and prior resume recovery versions remain in browser local storage. Profile/resume/chat data is sent to the selected AI provider when the user starts an extraction, chat, matching, email-alert import, cover-letter request, application-context chat, or CV-update proposal. A CV-update proposal also includes the user's recruiter messages and local saved-job research/tracking; it does not replace the resume until explicitly accepted. Job search requests are made by the server to third-party job-board APIs. Alert verification sends only extracted title, company, and location to the configured verification sources.
+- Each account has its own server directory under `.data/users/`, holding its profile, encrypted provider keys, and workspace. Legacy root-level profile/key files are copied—not deleted—when the first account is created. Profile/resume/chat data is sent to the selected AI provider when the user starts an extraction, chat, matching, email-alert import, cover-letter request, application-context chat, or CV-update proposal. A CV-update proposal also includes the user's recruiter messages and saved-job research/tracking; it does not replace the resume until explicitly accepted. Job search requests are made by the server to third-party job-board APIs. Alert verification sends only extracted title, company, and location to the configured verification sources.
 - Provider failures distinguish authentication/access, model, timeout, rate-limit, provider-availability, network, malformed-response, and rejected-request cases without returning provider response content. Server logs record only the operation, provider, HTTP status, error name, and safe category.
 - Avoid logging API keys, resume text, chat content, or full provider/job-board response bodies.
 
@@ -69,7 +73,7 @@ In a second terminal:
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite requires the API server on port 3000 for `/api` requests. `npm run dev:server` compiles the server before starting it; restart it after server changes. Restart `npm run dev` after `vite.config.mjs` changes as well, particularly the API proxy setting.
+Open `http://127.0.0.1:5173` during initial local migration, or `http://jobs.home.arpa` when Nginx Proxy Manager is forwarding to Vite. Vite requires the API server on port 3000 for `/api` requests. `npm run dev:server` compiles the server before starting it; restart it after server changes. Restart `npm run dev` after `vite.config.mjs` changes as well, particularly the API proxy setting.
 
 Production startup:
 
@@ -96,18 +100,18 @@ The README roadmap is the product-level source of truth. Continue the earliest u
 2. **Job research and practical tracking are complete.** Saved jobs now include a browser-local research area for user notes, permitted URLs, questions, contacts, and follow-ups; and a tracker for saved/applied/follow-up/interview dates, next action, deadline, and activity history. Existing saved jobs are normalized defensively on load. JobFinder does not fetch listings or company sites for research.
 3. **Iterative cover-letter workspace is complete.** Every saved job now has a browser-local session with an optional user-written starting letter, editable current draft, and persisted user/AI revision conversation. The provider receives the profile, job description, starting letter, current draft, and requested change for each turn. The user can copy/download the current draft or clear the session with confirmation. Existing browser-local jobs remain compatible because the session field is optional.
 4. **Reusable base letters and version restoration are implemented.** Users can explicitly promote a selected final letter into a new named reusable base. A job's letter can copy a selected base into its own starting text with provenance, while immutable generated versions can be restored with confirmation. Existing bases, drafts, and user edits are never silently overwritten.
-5. **Next task: acceptance and polish.** Add regression tests, migration tests, and an in-browser acceptance pass. Update README and this handoff whenever the product behavior, privacy boundary, or roadmap materially changes.
+5. **Self-hosted account foundation is implemented.** It has first-account setup, hashed credentials, persistent sessions, canonical-origin enforcement, migration of legacy server/browser state, and per-account server workspace storage. The next account task is owner-controlled creation of additional accounts, logout, password change, and account/session management; keep open public signup disabled by default.
 6. **Queued application workflow improvements.** Add a small saved-job application-context chat for questions about the role and practice answers to likely application-site questions; move the cover-letter workspace from a modal into the saved-job page; and automatically set the Applied date to today when a job changes to Applied while preserving later manual edits.
 7. **AI-assisted CV updates are complete.** The profile page can request an editable resume proposal using the current resume/profile, the user's recruiter-chat messages, and local saved-job research/tracking. The provider is instructed to use only supplied facts and never invent experience, achievements, qualifications, dates, employers, or company facts. Nothing changes automatically: accepting the reviewed draft requires confirmation, and the prior resume remains recoverable in browser-local history.
 
 ## Non-Negotiable Constraints
 
-- Treat JobFinder as a single-user, local-first tool. Keep provider keys encrypted server-side and never return, log, commit, or paste keys, `.env` values, CVs, email bodies, or other secrets into chat/source control.
+- Treat JobFinder as local-first and self-hostable on a trusted LAN. Keep provider keys encrypted server-side and never return, log, commit, or paste keys, `.env` values, CVs, email bodies, passwords, session tokens, or other secrets into chat/source control.
 - Do not add mailbox access, LinkedIn/Indeed scraping, automatic listing-URL fetching, company-site crawling that violates terms, bypasses of access controls, or automatic applications. The user may paste/import content and manually open original listings.
 - Use documented/public job APIs or sources whose terms permit the intended use. Preserve source attribution and original-listing links. Clearly label AI judgments and possible live equivalents as suggestions, not facts or guarantees.
 - Do not make up work history, achievements, qualifications, company facts, salary, job requirements, or research findings. Cover letters must remain truthful and should be reviewable/editable by the user before use.
-- Keep saved jobs, assessments, research, tracker data, and cover-letter artifacts local unless the user explicitly changes that design. Make local persistence, provider-sharing, reruns, data deletion, and destructive actions understandable in the UI. Confirm destructive operations.
-- Respect the existing privacy/security controls: localhost-only API handling, strict request validation and size limits, safe error messages, no sensitive logging, and server-side encrypted provider-key storage.
+- Keep saved jobs, assessments, research, tracker data, and cover-letter artifacts account-scoped. Make server persistence, provider-sharing, reruns, data deletion, and destructive actions understandable in the UI. Confirm destructive operations.
+- Respect the existing privacy/security controls: canonical-host enforcement, strict request validation and size limits, safe error messages, no sensitive logging, hashed passwords/sessions, and server-side encrypted provider-key storage. HTTP deployments must remain on a trusted LAN; prefer HTTPS before any wider exposure.
 - Keep the Svelte/TypeScript app accessible and responsive. Maintain the existing visual language where practical; do not rewrite unrelated UI or server code to deliver a focused feature.
 - When changing persisted browser data, use a tolerant migration/defaulting strategy so prior saved jobs keep working. When changing an API prompt or response shape, validate inputs and add mocked server tests.
 - Do not commit anything unless the user explicitly asks. In particular, `cv.tex` and the generated LaTeX/PDF artifacts are personal user files and must remain untracked. `.env` and `.data/` are private local state.
@@ -132,4 +136,4 @@ State any check that was not run and why. Test provider/network behavior with mo
 
 ## Repository State at Handoff
 
-The acceptance/polish modal removal is committed as `834a1dd`; AI-assisted CV-update proposals are committed as `0d1eff3`; defensive resume-recovery migration coverage is committed as `e3afc8d`. Full type, lint, formatting, build, test, and isolated sample-data browser acceptance passes succeeded with local Node.js v26.8.2; 35 tests passed. The remaining optional work is the dedicated browser UI-test tooling listed above. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.
+The account/self-hosting work is not committed yet. It passed type-checking, lint, formatting, a production build, `git diff --check`, and 36 mocked tests with local Node.js v26.8.2. The user verified `jobs.home.arpa` through Nginx Proxy Manager after Vite was configured to preserve Host/Origin. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.

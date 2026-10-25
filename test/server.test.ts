@@ -36,6 +36,7 @@ type ProviderConfiguration = {
 let server: http.Server;
 let baseUrl = '';
 let dataDirectory = '';
+const configuredPublicUrl = process.env.JOBFINDER_PUBLIC_URL;
 
 async function responseJson(response: Response): Promise<JsonBody> {
   const parsed: unknown = JSON.parse(await response.text());
@@ -73,8 +74,9 @@ async function configureProvider(provider: 'openai' | 'gemini' | 'anthropic', ke
 }
 
 before(async () => {
+  delete process.env.JOBFINDER_PUBLIC_URL;
   dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-test-'));
-  server = createServer({ dataDirectory });
+  server = createServer({ dataDirectory, authDisabled: true });
   await new Promise<void>((resolve) => server.listen({ port: 0, host: '127.0.0.1' }, resolve));
   baseUrl = `http://127.0.0.1:${serverPort(server).toString()}`;
 });
@@ -82,6 +84,8 @@ before(async () => {
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
   await fs.rm(dataDirectory, { recursive: true, force: true });
+  if (configuredPublicUrl === undefined) delete process.env.JOBFINDER_PUBLIC_URL;
+  else process.env.JOBFINDER_PUBLIC_URL = configuredPublicUrl;
 });
 
 test('serves the app with security headers', async () => {
@@ -284,6 +288,48 @@ test('stores a profile on the server for subsequent clients', async () => {
   );
 });
 
+test('creates the first account, adopts legacy profile data, and requires its session', async () => {
+  const authDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-auth-'));
+  const authServer = createServer({ dataDirectory: authDirectory });
+  await fs.writeFile(
+    path.join(authDirectory, 'profile.json'),
+    JSON.stringify({ name: 'Legacy Candidate', roles: 'Engineer' }),
+  );
+  await new Promise<void>((resolve) => authServer.listen({ port: 0, host: '127.0.0.1' }, resolve));
+  const authUrl = `http://127.0.0.1:${serverPort(authServer).toString()}`;
+  try {
+    const unauthenticated = await fetch(`${authUrl}/api/profile`);
+    assert.equal(unauthenticated.status, 401);
+    const setup = await fetch(`${authUrl}/api/auth/status`);
+    assert.deepEqual(await responseJson(setup), { setupRequired: true, user: null });
+    const registration = await fetch(`${authUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { origin: authUrl, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'matt', password: 'a secure password' }),
+    });
+    assert.equal(registration.status, 200);
+    const cookie = registration.headers.get('set-cookie');
+    assert.ok(cookie);
+    const profile = await fetch(`${authUrl}/api/profile`, { headers: { cookie } });
+    assert.equal(profile.status, 200);
+    assert.equal((await responseJson(profile)).profile.name, 'Legacy Candidate');
+    const workspace = await fetch(`${authUrl}/api/workspace`, {
+      method: 'PUT',
+      headers: { origin: authUrl, cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ workspace: { jobs: [{ id: 'legacy-job' }] } }),
+    });
+    assert.equal(workspace.status, 200);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      authServer.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    await fs.rm(authDirectory, { recursive: true, force: true });
+  }
+});
+
 test('rejects profile updates that are not from the JobFinder origin', async () => {
   const response = await fetch(`${baseUrl}/api/profile`, {
     method: 'PUT',
@@ -397,7 +443,7 @@ test('saves provider keys encrypted and uses/removes saved keys server-side', as
 
 test('allows only one concurrent save for a provider', async () => {
   const concurrentDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-concurrent-'));
-  const concurrentServer = createServer({ dataDirectory: concurrentDirectory });
+  const concurrentServer = createServer({ dataDirectory: concurrentDirectory, authDisabled: true });
   const oldKey = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
   await new Promise<void>((resolve) =>
@@ -494,7 +540,7 @@ test('rejects cross-origin API key changes', async () => {
 
 test('reports recovery guidance when encrypted storage is damaged', async () => {
   const damagedDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-damaged-'));
-  const damagedServer = createServer({ dataDirectory: damagedDirectory });
+  const damagedServer = createServer({ dataDirectory: damagedDirectory, authDisabled: true });
   await fs.writeFile(path.join(damagedDirectory, 'key-encryption.key'), Buffer.alloc(32, 1), {
     mode: 0o600,
   });

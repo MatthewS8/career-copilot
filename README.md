@@ -10,7 +10,7 @@ Requires Node.js 18.18 or newer. Install the frontend build dependencies with `n
 npm start
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The server binds to localhost by default. Set `PORT` to change the port, or set `HOST` to bind another interface. The app has no authentication, so only expose it on a trusted private network.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The server binds to localhost by default. Set `PORT` to change the port, or set `HOST` to bind another interface.
 
 `npm start` type-checks and builds the TypeScript/Svelte frontend and Node.js API server before starting the app. For frontend development, run `npm start` in one terminal and `npm run dev` in another, then open [http://127.0.0.1:5173](http://127.0.0.1:5173). The Vite development server proxies API requests to the server on port 3000.
 
@@ -32,7 +32,13 @@ Set `ADZUNA_COUNTRIES` to a comma-separated list of Adzuna two-letter country co
 
 Before configuring a source, review and accept its current terms. JobFinder preserves visible source attribution and original-listing links for Jobicy, Adzuna, and Jooble results; it does not guarantee that a source result is still open or equivalent to an alert lead. Jooble's free allocation is limited, so configure only the countries you genuinely intend to search.
 
-Encryption protects the API keys at rest from someone who can read only the encrypted-key file. The JobFinder server must be able to read both files to use your key, so it cannot protect against someone with access to your OS account or server process. If the encrypted file is damaged and there is no backup, remove `.data/provider-keys.enc` to discard saved keys and try again; keep `key-encryption.key`. Restart JobFinder after restoring files from backup. The saved profile is stored unencrypted in `.data/profile.json`, readable only by the server's OS user. JobFinder has no sign-in or multi-user protection: keep it bound to localhost by default and do not expose it to an untrusted network. All API endpoints accept requests only when the HTTP Host is a localhost address.
+Encryption protects the API keys at rest from someone who can read only the encrypted-key file. The JobFinder server must be able to read both files to use your key, so it cannot protect against someone with access to your OS account or server process. If the encrypted file is damaged and there is no backup, remove `.data/provider-keys.enc` to discard saved keys and try again; keep `key-encryption.key`. Restart JobFinder after restoring files from backup.
+
+## Accounts and self-hosting
+
+On first run, create the owner account. JobFinder stores a password hash and a persistent session cookie; sessions last 30 days and refresh while the app is used. Profile data, API keys, and saved workspace data are isolated by account on the server.
+
+To put JobFinder behind Nginx, first create the owner account through your current local URL so existing browser data is uploaded. Then set `JOBFINDER_PUBLIC_URL` to the full canonical URL (for example, `http://jobs.home.arpa`) and restart the server. Requests arriving at another host are redirected to that URL. Configure Nginx to preserve the `Host` header and proxy to JobFinder on loopback. HTTP is supported for a trusted LAN, but HTTPS is recommended because HTTP session cookies and submitted data can be observed on the network.
 
 ## Autofill your profile
 

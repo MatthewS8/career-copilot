@@ -11,8 +11,8 @@
     "dev:server": "tsc --project tsconfig.server.json && node build/server.js",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --project tsconfig.server.json --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
-    "format:check": "prettier --check \"src/**/*.{ts,svelte}\" server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
+    "format": "prettier --write \"src/**/*.{ts,svelte}\" auth.ts server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
+    "format:check": "prettier --check \"src/**/*.{ts,svelte}\" auth.ts server.ts \"test/**/*.ts\" \"*.mjs\" \"*.json\" \"*.html\"",
     "build": "npm run check && vite build && tsc --project tsconfig.server.json",
     "start": "npm run build && node build/server.js",
     "test": "npm run build && node --test build/test/server.test.js"

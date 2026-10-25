@@ -336,6 +336,14 @@
   let providerStatuses: Record<Provider, string> = { openai: '', gemini: '', anthropic: '' };
   let providerKeys: Record<Provider, string> = { openai: '', gemini: '', anthropic: '' };
   let providerBusy: Record<Provider, boolean> = { openai: false, gemini: false, anthropic: false };
+  let authReady = false;
+  let authenticated = false;
+  let setupRequired = false;
+  let authUsername = '';
+  let authPassword = '';
+  let authStatus = '';
+  let authBusy = false;
+  let workspaceSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
   $: inProgressCount = jobs.filter((job) =>
     ['Applying', 'Applied', 'Interviewing'].includes(job.status),
@@ -361,10 +369,140 @@
   );
 
   onMount(() => {
-    persistJobs();
-    void refreshProviderSettings();
-    void loadSavedProfile();
+    void initializeApp();
+    return () => {
+      if (workspaceSaveTimer) clearTimeout(workspaceSaveTimer);
+    };
   });
+
+  async function initializeApp(): Promise<void> {
+    try {
+      const response = await fetch('/api/auth/status');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not check account status.');
+      setupRequired = Boolean(data.setupRequired);
+      authenticated = Boolean(data.user);
+      if (authenticated) await loadAccountData();
+    } catch (error) {
+      authStatus = errorMessage(error, 'Could not connect to JobFinder.');
+    } finally {
+      authReady = true;
+    }
+  }
+
+  function workspaceSnapshot(): Record<string, unknown> {
+    return {
+      jobs,
+      baseLetters,
+      chatMessages,
+      suggestions,
+      hiddenJobUrls: [...hiddenJobUrls],
+      alertSuggestions,
+      onboardingStep,
+      resumeRevisions,
+    };
+  }
+
+  async function loadAccountData(): Promise<void> {
+    try {
+      const response = await fetch('/api/workspace');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not load the saved workspace.');
+      const workspace = data.workspace as Record<string, unknown> | null;
+      if (workspace) {
+        jobs = migrateJobs(workspace.jobs);
+        baseLetters = migrateBaseLetters(workspace.baseLetters);
+        chatMessages = readStoredMessages(workspace.chatMessages);
+        suggestions = readStoredSuggestions(workspace.suggestions);
+        hiddenJobUrls = new SvelteSet(
+          readStoredUrls(workspace.hiddenJobUrls).filter((url) => Boolean(linkFor(url))),
+        );
+        alertSuggestions = readStoredStrings(workspace.alertSuggestions);
+        onboardingStep = Number.isInteger(workspace.onboardingStep)
+          ? Number(workspace.onboardingStep)
+          : 0;
+        resumeRevisions = migrateStoredResumeRevisions(workspace.resumeRevisions);
+      } else {
+        await saveWorkspace();
+      }
+      persistJobs();
+      void refreshProviderSettings();
+      await loadSavedProfile();
+    } catch (error) {
+      authStatus = errorMessage(error, 'Could not load the saved workspace.');
+    }
+  }
+
+  function readStoredStrings(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string')
+      : [];
+  }
+
+  function readStoredUrls(value: unknown): string[] {
+    return readStoredStrings(value);
+  }
+
+  function readStoredMessages(value: unknown): ChatMessage[] {
+    return Array.isArray(value)
+      ? value.filter((item): item is ChatMessage =>
+          Boolean(
+            item &&
+            typeof item === 'object' &&
+            ((item as ChatMessage).role === 'user' || (item as ChatMessage).role === 'assistant') &&
+            typeof (item as ChatMessage).content === 'string',
+          ),
+        )
+      : [];
+  }
+
+  function readStoredSuggestions(value: unknown): Suggestion[] {
+    return Array.isArray(value)
+      ? (value.filter((item) => item && typeof item === 'object') as Suggestion[])
+      : [];
+  }
+
+  function scheduleWorkspaceSave(): void {
+    if (!authenticated) return;
+    if (workspaceSaveTimer) clearTimeout(workspaceSaveTimer);
+    workspaceSaveTimer = setTimeout(() => void saveWorkspace(), 250);
+  }
+
+  async function saveWorkspace(): Promise<void> {
+    if (!authenticated) return;
+    const response = await fetch('/api/workspace', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: workspaceSnapshot() }),
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || 'Could not save the workspace.');
+    }
+  }
+
+  async function submitAuth(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    authBusy = true;
+    authStatus = '';
+    try {
+      const response = await fetch(setupRequired ? '/api/auth/register' : '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUsername, password: authPassword }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not sign in.');
+      authenticated = true;
+      setupRequired = false;
+      authPassword = '';
+      await loadAccountData();
+    } catch (error) {
+      authStatus = errorMessage(error, 'Could not sign in.');
+    } finally {
+      authBusy = false;
+    }
+  }
 
   function hasProfileDetails(value: Profile): boolean {
     return Object.values(value).some(Boolean);
@@ -402,6 +540,7 @@
 
   function persistJobs() {
     localStorage.setItem(JOBS_KEY, JSON.stringify(jobs));
+    scheduleWorkspaceSave();
   }
 
   function setView(nextView: typeof view) {
@@ -413,6 +552,7 @@
   function completeOnboarding(): void {
     onboardingStep = 4;
     localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
+    scheduleWorkspaceSave();
     setView('dashboard');
   }
 
@@ -429,6 +569,7 @@
   function advanceOnboarding(step: number): void {
     onboardingStep = step;
     localStorage.setItem(ONBOARDING_KEY, JSON.stringify(onboardingStep));
+    scheduleWorkspaceSave();
   }
 
   function updateSearchLink(site: 'linkedin' | 'indeed' | 'google') {
@@ -552,6 +693,7 @@
 
   function persistChat(): void {
     localStorage.setItem(CHAT_KEY, JSON.stringify(chatMessages));
+    scheduleWorkspaceSave();
   }
 
   function clearRecruiterConversation(): void {
@@ -573,6 +715,7 @@
 
   function persistSuggestions(): void {
     localStorage.setItem(SUGGESTIONS_KEY, JSON.stringify(suggestions));
+    scheduleWorkspaceSave();
   }
 
   async function requestRecruiterReply(): Promise<void> {
@@ -639,6 +782,7 @@
     alertSuggestions = [];
     persistChat();
     localStorage.removeItem('jobfinder.linkedin-alert-suggestions.v1');
+    scheduleWorkspaceSave();
     await requestRecruiterReply();
   }
 
@@ -846,6 +990,7 @@
   function hideSuggestion(suggestion: Suggestion): void {
     hiddenJobUrls.add(suggestion.url);
     localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify([...hiddenJobUrls]));
+    scheduleWorkspaceSave();
     dismissSuggestion(suggestion.id);
     suggestionsStatus = 'Job hidden. It will not be suggested again from the same listing.';
   }
@@ -1445,7 +1590,8 @@
     try {
       await saveProfileToServer(profile);
       assessmentAnswers = { ...assessmentAnswers, [key]: '' };
-      assessmentAnswerStatus = 'Answer saved to your profile and will be included in future assessments.';
+      assessmentAnswerStatus =
+        'Answer saved to your profile and will be included in future assessments.';
     } catch (error) {
       assessmentAnswerStatus = `${errorMessage(error, 'Could not save the answer to the server.')} It remains in this browser profile.`;
     }
@@ -1636,6 +1782,7 @@
     }
     baseLetters = [...baseLetters, base].slice(-50);
     localStorage.setItem(BASE_LETTERS_KEY, JSON.stringify(baseLetters));
+    scheduleWorkspaceSave();
     letterStatus = `Saved “${base.name}” as a reusable base. Existing bases were not changed.`;
   }
 
@@ -1797,1784 +1944,1843 @@
   }
 </script>
 
-<div class="app-shell" class:studio-open={Boolean(activeJobId)}>
-  <aside class="sidebar">
-    <a class="brand" href="/" aria-label="JobFinder home">
-      <span class="brand-mark" aria-hidden="true">j.</span>
-      <span>jobfinder</span>
-    </a>
-    <div class="sidebar-label">WORKSPACE</div>
-    <nav class="primary-nav" aria-label="Main navigation">
-      <button
-        class="nav-item"
-        class:is-active={view === 'dashboard'}
-        type="button"
-        data-view="dashboard"
-        onclick={() => setView('dashboard')}
-      >
-        <span class="nav-icon" aria-hidden="true">⌂</span> Overview
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'profile'}
-        type="button"
-        data-view="profile"
-        onclick={() => setView('profile')}
-      >
-        <span class="nav-icon" aria-hidden="true">◎</span> My profile
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'recruiter'}
-        type="button"
-        data-view="recruiter"
-        onclick={() => setView('recruiter')}
-      >
-        <span class="nav-icon" aria-hidden="true">✎</span> AI recruiter
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'suggestions'}
-        type="button"
-        data-view="suggestions"
-        onclick={() => setView('suggestions')}
-      >
-        <span class="nav-icon" aria-hidden="true">★</span> Recommended
-        <span class="nav-count">{suggestions.length}</span>
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'linkedin-alerts'}
-        type="button"
-        data-view="linkedin-alerts"
-        onclick={() => setView('linkedin-alerts')}
-      >
-        <span class="nav-icon" aria-hidden="true">✉</span> LinkedIn alerts
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'jobs'}
-        type="button"
-        data-view="jobs"
-        onclick={() => setView('jobs')}
-      >
-        <span class="nav-icon" aria-hidden="true">▤</span> Saved jobs
-        <span class="nav-count">{jobs.length}</span>
-      </button>
-      <button
-        class="nav-item"
-        class:is-active={view === 'settings'}
-        type="button"
-        data-view="settings"
-        onclick={() => setView('settings')}
-      >
-        <span class="nav-icon" aria-hidden="true">⚙</span> API settings
-      </button>
-    </nav>
-    <div class="sidebar-bottom">
-      <div class="privacy-card">
-        <span class="privacy-icon" aria-hidden="true">✳</span>
-        <strong>Your search, your data</strong>
-        <p>Your profile is saved on this JobFinder server.</p>
-      </div>
-      <div class="sidebar-foot">A calmer way to find what’s next.</div>
-    </div>
-  </aside>
-
-  <div class="content-shell">
-    <header class="topbar">
-      <div class="breadcrumb">
-        Personal workspace <span>/</span>
-        <strong
-          >{{
-            dashboard: 'Overview',
-            profile: 'My profile',
-            recruiter: 'AI recruiter',
-            suggestions: 'Recommended jobs',
-            'linkedin-alerts': 'LinkedIn alerts',
-            onboarding: 'Getting started',
-            jobs: 'Saved jobs',
-            settings: 'API settings',
-          }[view]}</strong
+{#if !authReady}
+  <main class="auth-view" aria-busy="true"><p>Loading JobFinder…</p></main>
+{:else if !authenticated}
+  <main class="auth-view">
+    <section class="auth-card">
+      <p class="eyebrow">{setupRequired ? 'FIRST-TIME SETUP' : 'WELCOME BACK'}</p>
+      <h1>{setupRequired ? 'Create your <em>account.</em>' : 'Sign in to JobFinder.'}</h1>
+      <p>
+        {setupRequired
+          ? 'Your existing local profile and provider settings will be moved into this first account.'
+          : 'Your workspace is available wherever you sign in.'}
+      </p>
+      <form class="profile-form" onsubmit={submitAuth}>
+        <label class="field"
+          ><span>Username</span><input
+            autocomplete="username"
+            bind:value={authUsername}
+            required
+          /></label
         >
+        <label class="field"
+          ><span>Password</span><input
+            type="password"
+            autocomplete={setupRequired ? 'new-password' : 'current-password'}
+            bind:value={authPassword}
+            minlength="12"
+            required
+          /></label
+        >
+        {#if authStatus}<p class="status-message" role="status">{authStatus}</p>{/if}
+        <button class="button button-dark" disabled={authBusy}>
+          {authBusy ? 'Please wait…' : setupRequired ? 'Create first account' : 'Sign in'}
+        </button>
+      </form>
+    </section>
+  </main>
+{:else}
+  <div class="app-shell" class:studio-open={Boolean(activeJobId)}>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="JobFinder home">
+        <span class="brand-mark" aria-hidden="true">j.</span>
+        <span>jobfinder</span>
+      </a>
+      <div class="sidebar-label">WORKSPACE</div>
+      <nav class="primary-nav" aria-label="Main navigation">
+        <button
+          class="nav-item"
+          class:is-active={view === 'dashboard'}
+          type="button"
+          data-view="dashboard"
+          onclick={() => setView('dashboard')}
+        >
+          <span class="nav-icon" aria-hidden="true">⌂</span> Overview
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'profile'}
+          type="button"
+          data-view="profile"
+          onclick={() => setView('profile')}
+        >
+          <span class="nav-icon" aria-hidden="true">◎</span> My profile
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'recruiter'}
+          type="button"
+          data-view="recruiter"
+          onclick={() => setView('recruiter')}
+        >
+          <span class="nav-icon" aria-hidden="true">✎</span> AI recruiter
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'suggestions'}
+          type="button"
+          data-view="suggestions"
+          onclick={() => setView('suggestions')}
+        >
+          <span class="nav-icon" aria-hidden="true">★</span> Recommended
+          <span class="nav-count">{suggestions.length}</span>
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'linkedin-alerts'}
+          type="button"
+          data-view="linkedin-alerts"
+          onclick={() => setView('linkedin-alerts')}
+        >
+          <span class="nav-icon" aria-hidden="true">✉</span> LinkedIn alerts
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'jobs'}
+          type="button"
+          data-view="jobs"
+          onclick={() => setView('jobs')}
+        >
+          <span class="nav-icon" aria-hidden="true">▤</span> Saved jobs
+          <span class="nav-count">{jobs.length}</span>
+        </button>
+        <button
+          class="nav-item"
+          class:is-active={view === 'settings'}
+          type="button"
+          data-view="settings"
+          onclick={() => setView('settings')}
+        >
+          <span class="nav-icon" aria-hidden="true">⚙</span> API settings
+        </button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="privacy-card">
+          <span class="privacy-icon" aria-hidden="true">✳</span>
+          <strong>Your search, your data</strong>
+          <p>Your profile is saved on this JobFinder server.</p>
+        </div>
+        <div class="sidebar-foot">A calmer way to find what’s next.</div>
       </div>
-      <a
-        class="topbar-link"
-        href="#profile"
-        data-open-view="profile"
-        onclick={(event) => {
-          event.preventDefault();
-          setView('profile');
-        }}>Set up your profile <span aria-hidden="true">↗</span></a
-      >
-    </header>
+    </aside>
 
-    <main>
-      {#if view === 'onboarding'}
-        <section class="view onboarding-view" id="view-onboarding">
-          <p class="eyebrow">WELCOME TO JOBFINDER</p>
-          <h1>Build your search<br />with <em>intention.</em></h1>
-          <p class="heading-copy">
-            Set up the essentials in a few focused steps. You can skip any of them and return
-            whenever you are ready.
-          </p>
-          <div class="onboarding-steps" aria-label="Getting started progress">
-            {#each ['AI key', 'Your CV', 'Recruiter chat', 'Recommendations'] as label, index (label)}
-              <span class:current={onboardingStep === index} class:complete={onboardingStep > index}
-                >{index + 1}. {label}</span
-              >
-            {/each}
-          </div>
-          <article class="panel onboarding-card">
-            {#if onboardingStep === 0}
-              <p class="eyebrow">STEP 1 OF 4</p>
-              <h2>Add an AI provider key</h2>
-              <p>
-                Choose the provider you want to use. Your key is encrypted on this computer and is
-                never shown again.
-              </p>
-              <label class="field"
-                ><span>Provider</span><select bind:value={chatProvider}
-                  >{#each providers as provider (provider)}<option value={provider}
-                      >{providerNames[provider]}</option
-                    >{/each}</select
-                ></label
-              >
-              {#if providerSettings[chatProvider].configured}
-                <p class="status-message">{providerNames[chatProvider]} is ready.</p>
-                <button
-                  class="button button-dark"
-                  type="button"
-                  onclick={() => advanceOnboarding(1)}>Continue to your CV →</button
-                >
-              {:else}
-                <form
-                  class="provider-key-form"
-                  onsubmit={(event) => saveProviderKey(chatProvider, event)}
-                >
-                  <label class="field"
-                    ><span>API key</span><input
-                      type="password"
-                      autocomplete="off"
-                      bind:value={providerKeys[chatProvider]}
-                      placeholder="Paste your key"
-                    /></label
-                  >
-                  <div class="provider-actions">
-                    <span class="status-message">{providerStatuses[chatProvider]}</span><button
-                      class="button button-dark"
-                      type="submit"
-                      disabled={providerBusy[chatProvider]}>Save key</button
-                    >
-                  </div>
-                </form>
-              {/if}
-            {:else if onboardingStep === 1}
-              <p class="eyebrow">STEP 2 OF 4</p>
-              <h2>Bring your CV</h2>
-              <p>
-                Upload a plain-text, Markdown, or LaTeX CV, or paste its text. It stays in this
-                browser until you choose an AI action.
-              </p>
-              <label class="upload-control" for="onboarding-resume"
-                ><span class="upload-symbol" aria-hidden="true">↑</span><span
-                  ><strong>Choose a resume file</strong><small
-                    >.txt, .md, and .tex are read locally</small
-                  ></span
-                ><input
-                  id="onboarding-resume"
-                  type="file"
-                  accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"
-                  onchange={handleResumeFile}
-                /></label
-              >
-              <label class="field"
-                ><span>Resume text</span><textarea
-                  rows="8"
-                  bind:value={profile.resume}
-                  placeholder="Paste your CV here."
-                ></textarea></label
-              >
-              <div class="provider-actions">
-                <button class="text-button" type="button" onclick={() => advanceOnboarding(2)}
-                  >Skip for now</button
-                ><button class="button button-dark" type="button" onclick={continueFromResume}
-                  >Continue to recruiter →</button
-                >
-              </div>
-            {:else if onboardingStep === 2}
-              <p class="eyebrow">STEP 3 OF 4</p>
-              <h2>Have a focused recruiter chat</h2>
-              <p>
-                Tell the recruiter about the work you want next. It will turn your profile and
-                answers into a better search plan, including LinkedIn alert ideas.
-              </p>
-              <div class="provider-actions">
-                <button class="text-button" type="button" onclick={() => advanceOnboarding(3)}
-                  >Skip for now</button
-                ><button
-                  class="button button-dark"
-                  type="button"
-                  disabled={!providerSettings[chatProvider].configured}
-                  onclick={() => {
-                    setView('recruiter');
-                    if (!chatMessages.length) void restartChat();
-                  }}>Start the chat →</button
-                >
-              </div>
-            {:else}
-              <p class="eyebrow">STEP 4 OF 4</p>
-              <h2>Your search is ready to take shape.</h2>
-              <p>
-                Review roles from public job boards, bring in job alerts you receive, and verify
-                promising roles on the company careers page.
-              </p>
-              <div class="provider-actions">
-                <button class="text-button" type="button" onclick={completeOnboarding}
-                  >Go to overview</button
-                ><button
-                  class="button button-dark"
-                  type="button"
-                  disabled={findingJobs || !providerSettings[chatProvider].configured}
-                  onclick={() => {
-                    void findJobs();
-                    completeOnboarding();
-                  }}>Find recommendations →</button
-                >
-              </div>
-            {/if}
-            <button class="onboarding-skip" type="button" onclick={completeOnboarding}
-              >Set this up later</button
-            >
-          </article>
-        </section>
-      {/if}
+    <div class="content-shell">
+      <header class="topbar">
+        <div class="breadcrumb">
+          Personal workspace <span>/</span>
+          <strong
+            >{{
+              dashboard: 'Overview',
+              profile: 'My profile',
+              recruiter: 'AI recruiter',
+              suggestions: 'Recommended jobs',
+              'linkedin-alerts': 'LinkedIn alerts',
+              onboarding: 'Getting started',
+              jobs: 'Saved jobs',
+              settings: 'API settings',
+            }[view]}</strong
+          >
+        </div>
+        <a
+          class="topbar-link"
+          href="#profile"
+          data-open-view="profile"
+          onclick={(event) => {
+            event.preventDefault();
+            setView('profile');
+          }}>Set up your profile <span aria-hidden="true">↗</span></a
+        >
+      </header>
 
-      {#if view === 'dashboard'}
-        <section class="view" id="view-dashboard">
-          <div class="page-heading">
-            <div>
-              <p class="eyebrow">YOUR CAREER, IN FOCUS</p>
-              <h1>A clearer path to<br />your <em>next role.</em></h1>
-              <p class="heading-copy">
-                Keep good opportunities close, understand what fits, and put your best application
-                forward.
-              </p>
-            </div>
-            <div class="heading-art" aria-hidden="true">
-              <div class="orbit orbit-one"></div>
-              <div class="orbit orbit-two"></div>
-              <div class="art-star">✳</div>
-              <div class="art-note">made for<br />your next</div>
-            </div>
-          </div>
-          <div class="stats-row">
-            <article class="stat-card">
-              <span class="stat-label">JOBS SAVED</span>
-              <strong>{jobs.length}</strong>
-              <span class="stat-foot">opportunities to explore</span>
-            </article>
-            <article class="stat-card">
-              <span class="stat-label">IN PROGRESS</span>
-              <strong>{inProgressCount}</strong>
-              <span class="stat-foot">applications underway</span>
-            </article>
-            <article class="stat-card stat-card-accent">
-              <span class="stat-label">YOUR SEARCH</span>
-              <strong>{profile.roles || 'Not set up yet'}</strong>
-              <span class="stat-foot">{profile.location || 'Tell us what you’re looking for'}</span>
-            </article>
-          </div>
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">START EXPLORING</p>
-              <h2>Find roles that feel right</h2>
-            </div>
-            <button
-              class="text-button"
-              type="button"
-              data-open-view="profile"
-              onclick={() => setView('profile')}
-              >Tune your search <span aria-hidden="true">→</span></button
-            >
-          </div>
-          <div class="discovery-grid">
-            <article class="panel search-panel">
-              <div class="panel-icon lilac" aria-hidden="true">⌕</div>
-              <div>
-                <h3>Search the places you trust</h3>
-                <p>
-                  Use your role and location to open a focused search. Save interesting listings
-                  here to keep track of them.
-                </p>
-                <div class="search-links">
-                  <a
-                    class="search-link"
-                    href={updateSearchLink('linkedin')}
-                    target="_blank"
-                    rel="noopener noreferrer">LinkedIn <span aria-hidden="true">↗</span></a
-                  >
-                  <a
-                    class="search-link"
-                    href={updateSearchLink('indeed')}
-                    target="_blank"
-                    rel="noopener noreferrer">Indeed <span aria-hidden="true">↗</span></a
-                  >
-                  <a
-                    class="search-link"
-                    href={updateSearchLink('google')}
-                    target="_blank"
-                    rel="noopener noreferrer">Google Jobs <span aria-hidden="true">↗</span></a
-                  >
-                </div>
-              </div>
-            </article>
-            <article class="panel add-prompt">
-              <div class="panel-icon peach" aria-hidden="true">＋</div>
-              <div>
-                <h3>Found something promising?</h3>
-                <p>Save the role, add your notes, and come back when you’re ready to apply.</p>
-                <button
-                  class="button button-dark button-small"
-                  type="button"
-                  data-open-view="jobs"
-                  onclick={() => setView('jobs')}
-                  >Add a job <span aria-hidden="true">→</span></button
-                >
-              </div>
-            </article>
-          </div>
-          <div class="section-heading recent-heading">
-            <div>
-              <p class="eyebrow">A LITTLE MOMENTUM</p>
-              <h2>Your recent saves</h2>
-            </div>
-            <button
-              class="text-button"
-              type="button"
-              data-open-view="jobs"
-              onclick={() => setView('jobs')}>View all <span aria-hidden="true">→</span></button
-            >
-          </div>
-          <div class="recent-list" id="recent-list">
-            {#each jobs.slice(0, 3) as job (job.id)}
-              <article class="recent-item">
-                <span class="company-mark"
-                  >{(job.company || '?').trim().slice(0, 1).toUpperCase()}</span
-                >
-                <div class="recent-details">
-                  <strong>{job.title}</strong><span>{job.company}</span>
-                </div>
-                <span class={`status-pill ${statusClass(job.status)}`}>{job.status || 'Saved'}</span
-                >
-                <button class="recent-open" type="button" onclick={() => setView('jobs')}
-                  >View →</button
-                >
-              </article>
-            {:else}
-              <div class="recent-empty">Your saved roles will show up here.</div>
-            {/each}
-          </div>
-        </section>
-      {/if}
-
-      {#if view === 'profile'}
-        <section class="view" id="view-profile">
-          <div class="inner-heading">
-            <p class="eyebrow">A SEARCH THAT FITS YOU</p>
-            <h1>Let’s get to know <em>you.</em></h1>
+      <main>
+        {#if view === 'onboarding'}
+          <section class="view onboarding-view" id="view-onboarding">
+            <p class="eyebrow">WELCOME TO JOBFINDER</p>
+            <h1>Build your search<br />with <em>intention.</em></h1>
             <p class="heading-copy">
-              A few thoughtful details help you find roles that match your experience and the life
-              you want.
+              Set up the essentials in a few focused steps. You can skip any of them and return
+              whenever you are ready.
             </p>
-          </div>
-          <div class="form-note">
-            <span aria-hidden="true">✳</span>
-            <div>
-              <strong>Your profile is saved on this JobFinder server.</strong> When you choose AI autofill
-              or draft a letter, the text you submit is sent to the selected provider. Your API key stays
-              on the server; review extracted details before saving.
+            <div class="onboarding-steps" aria-label="Getting started progress">
+              {#each ['AI key', 'Your CV', 'Recruiter chat', 'Recommendations'] as label, index (label)}
+                <span
+                  class:current={onboardingStep === index}
+                  class:complete={onboardingStep > index}>{index + 1}. {label}</span
+                >
+              {/each}
             </div>
-          </div>
-          <form class="profile-form" id="profile-form" onsubmit={saveProfile}>
-            <div class="form-section">
-              <div class="form-section-heading">
-                <span class="step-number">01</span>
-                <div>
-                  <h2>Start with the basics</h2>
-                  <p>How should your next opportunity look?</p>
-                </div>
-              </div>
-              <div class="form-grid">
+            <article class="panel onboarding-card">
+              {#if onboardingStep === 0}
+                <p class="eyebrow">STEP 1 OF 4</p>
+                <h2>Add an AI provider key</h2>
+                <p>
+                  Choose the provider you want to use. Your key is encrypted on this computer and is
+                  never shown again.
+                </p>
                 <label class="field"
-                  ><span>Your name</span><input
-                    name="name"
-                    autocomplete="name"
-                    placeholder="e.g. Alex Morgan"
-                    bind:value={profile.name}
-                  /></label
-                >
-                <label class="field"
-                  ><span>LinkedIn profile URL</span><input
-                    name="linkedin"
-                    type="url"
-                    placeholder="https://www.linkedin.com/in/…"
-                    bind:value={profile.linkedin}
-                  /><small class="field-hint"
-                    >LinkedIn does not allow importing a profile from its URL alone. Open your
-                    profile, copy its text, and paste it below.</small
+                  ><span>Provider</span><select bind:value={chatProvider}
+                    >{#each providers as provider (provider)}<option value={provider}
+                        >{providerNames[provider]}</option
+                      >{/each}</select
                   ></label
                 >
-                <label class="field field-wide"
-                  ><span>Roles you’re interested in</span><input
-                    name="roles"
-                    placeholder="e.g. Product Designer, UX Lead"
-                    bind:value={profile.roles}
+                {#if providerSettings[chatProvider].configured}
+                  <p class="status-message">{providerNames[chatProvider]} is ready.</p>
+                  <button
+                    class="button button-dark"
+                    type="button"
+                    onclick={() => advanceOnboarding(1)}>Continue to your CV →</button
+                  >
+                {:else}
+                  <form
+                    class="provider-key-form"
+                    onsubmit={(event) => saveProviderKey(chatProvider, event)}
+                  >
+                    <label class="field"
+                      ><span>API key</span><input
+                        type="password"
+                        autocomplete="off"
+                        bind:value={providerKeys[chatProvider]}
+                        placeholder="Paste your key"
+                      /></label
+                    >
+                    <div class="provider-actions">
+                      <span class="status-message">{providerStatuses[chatProvider]}</span><button
+                        class="button button-dark"
+                        type="submit"
+                        disabled={providerBusy[chatProvider]}>Save key</button
+                      >
+                    </div>
+                  </form>
+                {/if}
+              {:else if onboardingStep === 1}
+                <p class="eyebrow">STEP 2 OF 4</p>
+                <h2>Bring your CV</h2>
+                <p>
+                  Upload a plain-text, Markdown, or LaTeX CV, or paste its text. It stays in this
+                  browser until you choose an AI action.
+                </p>
+                <label class="upload-control" for="onboarding-resume"
+                  ><span class="upload-symbol" aria-hidden="true">↑</span><span
+                    ><strong>Choose a resume file</strong><small
+                      >.txt, .md, and .tex are read locally</small
+                    ></span
+                  ><input
+                    id="onboarding-resume"
+                    type="file"
+                    accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"
+                    onchange={handleResumeFile}
                   /></label
                 >
                 <label class="field"
-                  ><span>Where would you like to work?</span><input
-                    name="location"
-                    placeholder="e.g. Amsterdam, Remote"
-                    bind:value={profile.location}
-                  /></label
-                >
-                <label class="field"
-                  ><span>Work style</span><select name="workStyle" bind:value={profile.workStyle}
-                    ><option value="">Choose what suits you</option><option value="Remote"
-                      >Remote</option
-                    ><option value="Hybrid">Hybrid</option><option value="On-site">On-site</option
-                    ><option value="Flexible">Flexible</option></select
-                  ></label
-                >
-                <label class="field field-wide"
-                  ><span>Industries or skills you’d like to use</span><input
-                    name="skills"
-                    placeholder="e.g. Climate tech, Figma, user research"
-                    bind:value={profile.skills}
-                  /></label
-                >
-                <label class="field field-wide"
-                  ><span>What kind of work brings out your best?</span><textarea
-                    name="priorities"
-                    rows="3"
-                    placeholder="Think about the problems you enjoy, the team culture you value, or what you want more of in your next role."
-                    bind:value={profile.priorities}
+                  ><span>Resume text</span><textarea
+                    rows="8"
+                    bind:value={profile.resume}
+                    placeholder="Paste your CV here."
                   ></textarea></label
                 >
-                <label class="field field-wide"
-                  ><span>Career preferences and clarifications</span><textarea
-                    name="clarifications"
-                    rows="3"
-                    placeholder="Facts you want AI assessments to remember, such as relocation flexibility, on-site preferences, or technologies you have used."
-                    bind:value={profile.clarifications}
-                  ></textarea><small class="field-hint"
-                    >Answers saved from a job assessment are collected here for future jobs.</small
-                  ></label
-                >
-                <label class="field field-wide"
-                  ><span>Experience and strengths</span><textarea
-                    name="experience"
-                    rows="3"
-                    placeholder="A short summary of your experience, accomplishments, and strengths."
-                    bind:value={profile.experience}
-                  ></textarea></label
-                >
-              </div>
-            </div>
-            <div class="form-section resume-section">
-              <div class="form-section-heading">
-                <span class="step-number">02</span>
-                <div>
-                  <h2>Bring your experience along</h2>
-                  <p>
-                    Upload a .txt, .md, or LaTeX .tex resume, or paste its text. Choose an AI
-                    provider to suggest profile details.
-                  </p>
+                <div class="provider-actions">
+                  <button class="text-button" type="button" onclick={() => advanceOnboarding(2)}
+                    >Skip for now</button
+                  ><button class="button button-dark" type="button" onclick={continueFromResume}
+                    >Continue to recruiter →</button
+                  >
                 </div>
-              </div>
-              <label class="upload-control" for="resume-file"
-                ><span class="upload-symbol" aria-hidden="true">↑</span><span
-                  ><strong>Choose a resume file</strong><small
-                    >.txt, .md, and .tex files are read locally in your browser</small
-                  ></span
-                ><input
-                  id="resume-file"
-                  type="file"
-                  accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"
-                  onchange={handleResumeFile}
-                /></label
-              >
-              <label class="field"
-                ><span>Resume text or LaTeX source</span><textarea
-                  name="resume"
-                  rows="9"
-                  placeholder="Paste the relevant parts of your CV or its LaTeX source here."
-                  bind:value={profile.resume}
-                ></textarea></label
-              >
-              <div class="autofill-controls">
-                <label class="field"
-                  ><span>AI provider</span><select id="profile-ai-provider"
-                    ><option value="openai">OpenAI</option><option value="gemini"
-                      >Google Gemini</option
-                    ><option value="anthropic">Anthropic Claude</option></select
-                  ></label
-                ><button
-                  class="button button-dark"
-                  id="autofill-resume"
-                  type="button"
-                  onclick={() => autofillProfile('resume', profile.resume)}
-                  >Autofill from resume <span aria-hidden="true">✳</span></button
-                >
-              </div>
-              <div class="resume-update-workspace">
-                <div>
-                  <strong>Propose CV updates</strong>
-                  <p>
-                    Create a draft from your current resume, profile, your own recruiter messages,
-                    and saved-job research/tracking. The provider receives that selected local
-                    context only to make this proposal. Review every word before accepting; it never
-                    changes your resume automatically.
-                  </p>
-                </div>
-                <div class="autofill-controls">
-                  <label class="field"
-                    ><span>AI provider</span><select bind:value={resumeUpdateProvider}
-                      >{#each providers as provider (provider)}<option
-                          value={provider}
-                          disabled={!providerSettings[provider].configured}
-                          >{providerNames[provider]}{providerSettings[provider].configured
-                            ? ''
-                            : ' (no key)'}</option
-                        >{/each}</select
-                    ></label
+              {:else if onboardingStep === 2}
+                <p class="eyebrow">STEP 3 OF 4</p>
+                <h2>Have a focused recruiter chat</h2>
+                <p>
+                  Tell the recruiter about the work you want next. It will turn your profile and
+                  answers into a better search plan, including LinkedIn alert ideas.
+                </p>
+                <div class="provider-actions">
+                  <button class="text-button" type="button" onclick={() => advanceOnboarding(3)}
+                    >Skip for now</button
                   ><button
                     class="button button-dark"
                     type="button"
-                    disabled={proposingResumeUpdate ||
-                      !providerSettings[resumeUpdateProvider].configured}
-                    onclick={proposeResumeUpdate}
-                    >{proposingResumeUpdate ? 'Preparing…' : 'Propose resume update ✳'}</button
+                    disabled={!providerSettings[chatProvider].configured}
+                    onclick={() => {
+                      setView('recruiter');
+                      if (!chatMessages.length) void restartChat();
+                    }}>Start the chat →</button
                   >
                 </div>
-                {#if resumeUpdateProposal}
-                  <label class="field resume-proposal"
-                    ><span>Reviewable proposed resume</span><textarea
-                      rows="12"
-                      maxlength="20000"
-                      bind:value={resumeUpdateProposal}
-                    ></textarea><small class="field-hint"
-                      >Edit this proposal freely. Accepting it replaces only the resume text; the
-                      previous version stays recoverable in this browser.</small
-                    ></label
+              {:else}
+                <p class="eyebrow">STEP 4 OF 4</p>
+                <h2>Your search is ready to take shape.</h2>
+                <p>
+                  Review roles from public job boards, bring in job alerts you receive, and verify
+                  promising roles on the company careers page.
+                </p>
+                <div class="provider-actions">
+                  <button class="text-button" type="button" onclick={completeOnboarding}
+                    >Go to overview</button
+                  ><button
+                    class="button button-dark"
+                    type="button"
+                    disabled={findingJobs || !providerSettings[chatProvider].configured}
+                    onclick={() => {
+                      void findJobs();
+                      completeOnboarding();
+                    }}>Find recommendations →</button
                   >
-                  <div class="dialog-actions">
-                    <button class="button button-dark" type="button" onclick={acceptResumeUpdate}
-                      >Accept reviewed resume</button
-                    ><button
-                      class="text-button"
-                      type="button"
-                      onclick={() => {
-                        resumeUpdateProposal = '';
-                        resumeUpdateStatus = 'Proposal discarded. Your resume was not changed.';
-                      }}>Discard proposal</button
+                </div>
+              {/if}
+              <button class="onboarding-skip" type="button" onclick={completeOnboarding}
+                >Set this up later</button
+              >
+            </article>
+          </section>
+        {/if}
+
+        {#if view === 'dashboard'}
+          <section class="view" id="view-dashboard">
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">YOUR CAREER, IN FOCUS</p>
+                <h1>A clearer path to<br />your <em>next role.</em></h1>
+                <p class="heading-copy">
+                  Keep good opportunities close, understand what fits, and put your best application
+                  forward.
+                </p>
+              </div>
+              <div class="heading-art" aria-hidden="true">
+                <div class="orbit orbit-one"></div>
+                <div class="orbit orbit-two"></div>
+                <div class="art-star">✳</div>
+                <div class="art-note">made for<br />your next</div>
+              </div>
+            </div>
+            <div class="stats-row">
+              <article class="stat-card">
+                <span class="stat-label">JOBS SAVED</span>
+                <strong>{jobs.length}</strong>
+                <span class="stat-foot">opportunities to explore</span>
+              </article>
+              <article class="stat-card">
+                <span class="stat-label">IN PROGRESS</span>
+                <strong>{inProgressCount}</strong>
+                <span class="stat-foot">applications underway</span>
+              </article>
+              <article class="stat-card stat-card-accent">
+                <span class="stat-label">YOUR SEARCH</span>
+                <strong>{profile.roles || 'Not set up yet'}</strong>
+                <span class="stat-foot"
+                  >{profile.location || 'Tell us what you’re looking for'}</span
+                >
+              </article>
+            </div>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">START EXPLORING</p>
+                <h2>Find roles that feel right</h2>
+              </div>
+              <button
+                class="text-button"
+                type="button"
+                data-open-view="profile"
+                onclick={() => setView('profile')}
+                >Tune your search <span aria-hidden="true">→</span></button
+              >
+            </div>
+            <div class="discovery-grid">
+              <article class="panel search-panel">
+                <div class="panel-icon lilac" aria-hidden="true">⌕</div>
+                <div>
+                  <h3>Search the places you trust</h3>
+                  <p>
+                    Use your role and location to open a focused search. Save interesting listings
+                    here to keep track of them.
+                  </p>
+                  <div class="search-links">
+                    <a
+                      class="search-link"
+                      href={updateSearchLink('linkedin')}
+                      target="_blank"
+                      rel="noopener noreferrer">LinkedIn <span aria-hidden="true">↗</span></a
+                    >
+                    <a
+                      class="search-link"
+                      href={updateSearchLink('indeed')}
+                      target="_blank"
+                      rel="noopener noreferrer">Indeed <span aria-hidden="true">↗</span></a
+                    >
+                    <a
+                      class="search-link"
+                      href={updateSearchLink('google')}
+                      target="_blank"
+                      rel="noopener noreferrer">Google Jobs <span aria-hidden="true">↗</span></a
                     >
                   </div>
-                {/if}
-                {#if resumeRevisions.length}
-                  <details class="resume-revisions">
-                    <summary>Recover earlier resume versions ({resumeRevisions.length})</summary>
-                    <ul>
-                      {#each [...resumeRevisions].reverse() as revision (revision.id)}<li>
-                          <span>{new Date(revision.acceptedAt).toLocaleString()}</span><button
-                            class="text-button"
-                            type="button"
-                            onclick={() => restoreResumeRevision(revision)}>Restore</button
-                          >
-                        </li>{/each}
-                    </ul>
-                  </details>
-                {/if}
-                <p class="status-message" role="status">{resumeUpdateStatus}</p>
-              </div>
-            </div>
-            <div class="form-section linkedin-import-section">
-              <div class="form-section-heading">
-                <span class="step-number">03</span>
-                <div>
-                  <h2>Or bring in LinkedIn details</h2>
-                  <p>
-                    For privacy and access reasons, the app can’t read a LinkedIn profile from its
-                    URL. Paste profile text you choose to share.
-                  </p>
                 </div>
-              </div>
-              <label class="field"
-                ><span>Copied LinkedIn profile text</span><textarea
-                  id="linkedin-profile-text"
-                  rows="7"
-                  placeholder="Open your LinkedIn profile, copy the relevant text, and paste it here."
-                ></textarea></label
-              >
-              <div class="autofill-controls">
-                <span class="field-hint"
-                  >Only this pasted text is sent when you choose autofill.</span
-                ><button
-                  class="button button-dark"
-                  id="autofill-linkedin"
-                  type="button"
-                  onclick={autofillLinkedInText}
-                  >Autofill from LinkedIn text <span aria-hidden="true">✳</span></button
-                >
-              </div>
+              </article>
+              <article class="panel add-prompt">
+                <div class="panel-icon peach" aria-hidden="true">＋</div>
+                <div>
+                  <h3>Found something promising?</h3>
+                  <p>Save the role, add your notes, and come back when you’re ready to apply.</p>
+                  <button
+                    class="button button-dark button-small"
+                    type="button"
+                    data-open-view="jobs"
+                    onclick={() => setView('jobs')}
+                    >Add a job <span aria-hidden="true">→</span></button
+                  >
+                </div>
+              </article>
             </div>
-            <div class="form-actions">
-              <span id="profile-status" class="status-message" role="status">{profileStatus}</span
-              ><button class="button button-dark" type="submit"
-                >Save my profile <span aria-hidden="true">→</span></button
+            <div class="section-heading recent-heading">
+              <div>
+                <p class="eyebrow">A LITTLE MOMENTUM</p>
+                <h2>Your recent saves</h2>
+              </div>
+              <button
+                class="text-button"
+                type="button"
+                data-open-view="jobs"
+                onclick={() => setView('jobs')}>View all <span aria-hidden="true">→</span></button
               >
             </div>
-          </form>
-        </section>
-      {/if}
+            <div class="recent-list" id="recent-list">
+              {#each jobs.slice(0, 3) as job (job.id)}
+                <article class="recent-item">
+                  <span class="company-mark"
+                    >{(job.company || '?').trim().slice(0, 1).toUpperCase()}</span
+                  >
+                  <div class="recent-details">
+                    <strong>{job.title}</strong><span>{job.company}</span>
+                  </div>
+                  <span class={`status-pill ${statusClass(job.status)}`}
+                    >{job.status || 'Saved'}</span
+                  >
+                  <button class="recent-open" type="button" onclick={() => setView('jobs')}
+                    >View →</button
+                  >
+                </article>
+              {:else}
+                <div class="recent-empty">Your saved roles will show up here.</div>
+              {/each}
+            </div>
+          </section>
+        {/if}
 
-      {#if view === 'jobs'}
-        <section class="view" id="view-jobs">
-          <div class="inner-heading jobs-heading">
-            <div>
-              <p class="eyebrow">YOUR OPPORTUNITY LIST</p>
-              <h1>Good things, <em>gathered.</em></h1>
+        {#if view === 'profile'}
+          <section class="view" id="view-profile">
+            <div class="inner-heading">
+              <p class="eyebrow">A SEARCH THAT FITS YOU</p>
+              <h1>Let’s get to know <em>you.</em></h1>
               <p class="heading-copy">
-                Save roles you find, jot down what stands out, and keep your application moving.
+                A few thoughtful details help you find roles that match your experience and the life
+                you want.
               </p>
             </div>
-            <div class="saved-count"><strong>{jobs.length}</strong><span>saved roles</span></div>
-          </div>
-          <div class="jobs-layout">
-            <section class="panel job-form-panel">
-              <p class="eyebrow">SAVE AN OPPORTUNITY</p>
-              <h2>Keep it on your radar</h2>
-              <form id="job-form" onsubmit={saveJob}>
-                <label class="field"
-                  ><span>Job title *</span><input
-                    id="job-title"
-                    name="title"
-                    required
-                    maxlength="200"
-                    placeholder="e.g. Senior Product Designer"
-                  /></label
-                >
-                <label class="field"
-                  ><span>Company *</span><input
-                    name="company"
-                    required
-                    maxlength="200"
-                    placeholder="Company name"
-                  /></label
-                >
-                <label class="field"
-                  ><span>Job listing URL *</span><input
-                    name="url"
-                    type="url"
-                    required
-                    placeholder="https://…"
-                  /></label
-                >
-                <label class="field"
-                  ><span>Job description</span><textarea
-                    name="description"
-                    rows="5"
-                    maxlength="15000"
-                    placeholder="Paste the listing here to assess your fit and draft a cover letter."
-                  ></textarea></label
-                >
-                <label class="field"
-                  ><span>Your notes</span><textarea
-                    name="notes"
-                    rows="3"
-                    placeholder="What caught your eye? Anything to ask about?"
-                  ></textarea></label
-                >
-                <button class="button button-dark button-full" type="submit"
-                  >Save this role <span aria-hidden="true">→</span></button
-                >
-                <p class="form-footnote">
-                  Job listings are saved manually. We don’t log into or scrape job sites.
-                </p>
-              </form>
-            </section>
-            <section class="job-list-section">
-              <div class="list-toolbar">
-                <h2>Saved roles <span id="list-count">({jobs.length})</span></h2>
-                <label class="sr-only" for="job-filter">Filter saved jobs</label><select
-                  id="job-filter"
-                  aria-label="Filter saved jobs"
-                  bind:value={jobFilter}
-                  ><option value="all">All roles</option><option value="Saved">Saved</option><option
-                    value="Applying">Applying</option
-                  ><option value="Applied">Applied</option><option value="Interviewing"
-                    >Interviewing</option
-                  ><option value="Archived">Archived</option></select
-                >
+            <div class="form-note">
+              <span aria-hidden="true">✳</span>
+              <div>
+                <strong>Your profile is saved on this JobFinder server.</strong> When you choose AI autofill
+                or draft a letter, the text you submit is sent to the selected provider. Your API key
+                stays on the server; review extracted details before saving.
               </div>
-              <div class="job-list" id="job-list">
-                {#if jobs.length === 0}
-                  <div class="empty-state">
-                    <span class="empty-mark">✳</span>
-                    <h3>Your next possibility starts here.</h3>
+            </div>
+            <form class="profile-form" id="profile-form" onsubmit={saveProfile}>
+              <div class="form-section">
+                <div class="form-section-heading">
+                  <span class="step-number">01</span>
+                  <div>
+                    <h2>Start with the basics</h2>
+                    <p>How should your next opportunity look?</p>
+                  </div>
+                </div>
+                <div class="form-grid">
+                  <label class="field"
+                    ><span>Your name</span><input
+                      name="name"
+                      autocomplete="name"
+                      placeholder="e.g. Alex Morgan"
+                      bind:value={profile.name}
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>LinkedIn profile URL</span><input
+                      name="linkedin"
+                      type="url"
+                      placeholder="https://www.linkedin.com/in/…"
+                      bind:value={profile.linkedin}
+                    /><small class="field-hint"
+                      >LinkedIn does not allow importing a profile from its URL alone. Open your
+                      profile, copy its text, and paste it below.</small
+                    ></label
+                  >
+                  <label class="field field-wide"
+                    ><span>Roles you’re interested in</span><input
+                      name="roles"
+                      placeholder="e.g. Product Designer, UX Lead"
+                      bind:value={profile.roles}
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>Where would you like to work?</span><input
+                      name="location"
+                      placeholder="e.g. Amsterdam, Remote"
+                      bind:value={profile.location}
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>Work style</span><select name="workStyle" bind:value={profile.workStyle}
+                      ><option value="">Choose what suits you</option><option value="Remote"
+                        >Remote</option
+                      ><option value="Hybrid">Hybrid</option><option value="On-site">On-site</option
+                      ><option value="Flexible">Flexible</option></select
+                    ></label
+                  >
+                  <label class="field field-wide"
+                    ><span>Industries or skills you’d like to use</span><input
+                      name="skills"
+                      placeholder="e.g. Climate tech, Figma, user research"
+                      bind:value={profile.skills}
+                    /></label
+                  >
+                  <label class="field field-wide"
+                    ><span>What kind of work brings out your best?</span><textarea
+                      name="priorities"
+                      rows="3"
+                      placeholder="Think about the problems you enjoy, the team culture you value, or what you want more of in your next role."
+                      bind:value={profile.priorities}
+                    ></textarea></label
+                  >
+                  <label class="field field-wide"
+                    ><span>Career preferences and clarifications</span><textarea
+                      name="clarifications"
+                      rows="3"
+                      placeholder="Facts you want AI assessments to remember, such as relocation flexibility, on-site preferences, or technologies you have used."
+                      bind:value={profile.clarifications}
+                    ></textarea><small class="field-hint"
+                      >Answers saved from a job assessment are collected here for future jobs.</small
+                    ></label
+                  >
+                  <label class="field field-wide"
+                    ><span>Experience and strengths</span><textarea
+                      name="experience"
+                      rows="3"
+                      placeholder="A short summary of your experience, accomplishments, and strengths."
+                      bind:value={profile.experience}
+                    ></textarea></label
+                  >
+                </div>
+              </div>
+              <div class="form-section resume-section">
+                <div class="form-section-heading">
+                  <span class="step-number">02</span>
+                  <div>
+                    <h2>Bring your experience along</h2>
                     <p>
-                      Save a job listing on the left to keep it close and start planning your next
-                      step.
+                      Upload a .txt, .md, or LaTeX .tex resume, or paste its text. Choose an AI
+                      provider to suggest profile details.
                     </p>
                   </div>
-                {:else if visibleJobs.length === 0}
-                  <div class="empty-state compact-empty">No saved jobs match this filter.</div>
-                {/if}
-                {#each visibleJobs as job (job.id)}
-                  <article class="job-card" class:studio-job={activeJobId === job.id}>
-                    <div class="job-card-top">
-                      <div class="job-company">
-                        <span class="company-mark"
-                          >{(job.company || '?').trim().slice(0, 1).toUpperCase()}</span
-                        >
-                        <div>
-                          <h3>{job.title}</h3>
-                          <p>{job.company}</p>
-                        </div>
-                      </div>
-                      <select
-                        class={`status-select ${statusClass(job.status)}`}
-                        aria-label={`Application status for ${job.title} at ${job.company}`}
-                        value={job.status}
-                        onchange={(event) => updateJobStatus(job, event)}
+                </div>
+                <label class="upload-control" for="resume-file"
+                  ><span class="upload-symbol" aria-hidden="true">↑</span><span
+                    ><strong>Choose a resume file</strong><small
+                      >.txt, .md, and .tex files are read locally in your browser</small
+                    ></span
+                  ><input
+                    id="resume-file"
+                    type="file"
+                    accept=".txt,.md,.tex,text/plain,text/markdown,text/x-tex,application/x-tex"
+                    onchange={handleResumeFile}
+                  /></label
+                >
+                <label class="field"
+                  ><span>Resume text or LaTeX source</span><textarea
+                    name="resume"
+                    rows="9"
+                    placeholder="Paste the relevant parts of your CV or its LaTeX source here."
+                    bind:value={profile.resume}
+                  ></textarea></label
+                >
+                <div class="autofill-controls">
+                  <label class="field"
+                    ><span>AI provider</span><select id="profile-ai-provider"
+                      ><option value="openai">OpenAI</option><option value="gemini"
+                        >Google Gemini</option
+                      ><option value="anthropic">Anthropic Claude</option></select
+                    ></label
+                  ><button
+                    class="button button-dark"
+                    id="autofill-resume"
+                    type="button"
+                    onclick={() => autofillProfile('resume', profile.resume)}
+                    >Autofill from resume <span aria-hidden="true">✳</span></button
+                  >
+                </div>
+                <div class="resume-update-workspace">
+                  <div>
+                    <strong>Propose CV updates</strong>
+                    <p>
+                      Create a draft from your current resume, profile, your own recruiter messages,
+                      and saved-job research/tracking. The provider receives that selected local
+                      context only to make this proposal. Review every word before accepting; it
+                      never changes your resume automatically.
+                    </p>
+                  </div>
+                  <div class="autofill-controls">
+                    <label class="field"
+                      ><span>AI provider</span><select bind:value={resumeUpdateProvider}
+                        >{#each providers as provider (provider)}<option
+                            value={provider}
+                            disabled={!providerSettings[provider].configured}
+                            >{providerNames[provider]}{providerSettings[provider].configured
+                              ? ''
+                              : ' (no key)'}</option
+                          >{/each}</select
+                      ></label
+                    ><button
+                      class="button button-dark"
+                      type="button"
+                      disabled={proposingResumeUpdate ||
+                        !providerSettings[resumeUpdateProvider].configured}
+                      onclick={proposeResumeUpdate}
+                      >{proposingResumeUpdate ? 'Preparing…' : 'Propose resume update ✳'}</button
+                    >
+                  </div>
+                  {#if resumeUpdateProposal}
+                    <label class="field resume-proposal"
+                      ><span>Reviewable proposed resume</span><textarea
+                        rows="12"
+                        maxlength="20000"
+                        bind:value={resumeUpdateProposal}
+                      ></textarea><small class="field-hint"
+                        >Edit this proposal freely. Accepting it replaces only the resume text; the
+                        previous version stays recoverable in this browser.</small
+                      ></label
+                    >
+                    <div class="dialog-actions">
+                      <button class="button button-dark" type="button" onclick={acceptResumeUpdate}
+                        >Accept reviewed resume</button
+                      ><button
+                        class="text-button"
+                        type="button"
+                        onclick={() => {
+                          resumeUpdateProposal = '';
+                          resumeUpdateStatus = 'Proposal discarded. Your resume was not changed.';
+                        }}>Discard proposal</button
                       >
-                        {#each statuses as status (status)}<option value={status}>{status}</option
-                          >{/each}
-                      </select>
                     </div>
-                    {#if job.notes}<p class="job-notes">{job.notes}</p>{/if}
-                    {#if job.assessment}
-                      <section class="job-assessment" aria-label={`Assessment for ${job.title}`}>
-                        <div class="assessment-heading">
-                          <strong>AI fit assessment</strong>
-                          <span class={`match-score ${scoreClass(job.assessment.score)}`}
-                            >{job.assessment.score}% fit</span
+                  {/if}
+                  {#if resumeRevisions.length}
+                    <details class="resume-revisions">
+                      <summary>Recover earlier resume versions ({resumeRevisions.length})</summary>
+                      <ul>
+                        {#each [...resumeRevisions].reverse() as revision (revision.id)}<li>
+                            <span>{new Date(revision.acceptedAt).toLocaleString()}</span><button
+                              class="text-button"
+                              type="button"
+                              onclick={() => restoreResumeRevision(revision)}>Restore</button
+                            >
+                          </li>{/each}
+                      </ul>
+                    </details>
+                  {/if}
+                  <p class="status-message" role="status">{resumeUpdateStatus}</p>
+                </div>
+              </div>
+              <div class="form-section linkedin-import-section">
+                <div class="form-section-heading">
+                  <span class="step-number">03</span>
+                  <div>
+                    <h2>Or bring in LinkedIn details</h2>
+                    <p>
+                      For privacy and access reasons, the app can’t read a LinkedIn profile from its
+                      URL. Paste profile text you choose to share.
+                    </p>
+                  </div>
+                </div>
+                <label class="field"
+                  ><span>Copied LinkedIn profile text</span><textarea
+                    id="linkedin-profile-text"
+                    rows="7"
+                    placeholder="Open your LinkedIn profile, copy the relevant text, and paste it here."
+                  ></textarea></label
+                >
+                <div class="autofill-controls">
+                  <span class="field-hint"
+                    >Only this pasted text is sent when you choose autofill.</span
+                  ><button
+                    class="button button-dark"
+                    id="autofill-linkedin"
+                    type="button"
+                    onclick={autofillLinkedInText}
+                    >Autofill from LinkedIn text <span aria-hidden="true">✳</span></button
+                  >
+                </div>
+              </div>
+              <div class="form-actions">
+                <span id="profile-status" class="status-message" role="status">{profileStatus}</span
+                ><button class="button button-dark" type="submit"
+                  >Save my profile <span aria-hidden="true">→</span></button
+                >
+              </div>
+            </form>
+          </section>
+        {/if}
+
+        {#if view === 'jobs'}
+          <section class="view" id="view-jobs">
+            <div class="inner-heading jobs-heading">
+              <div>
+                <p class="eyebrow">YOUR OPPORTUNITY LIST</p>
+                <h1>Good things, <em>gathered.</em></h1>
+                <p class="heading-copy">
+                  Save roles you find, jot down what stands out, and keep your application moving.
+                </p>
+              </div>
+              <div class="saved-count"><strong>{jobs.length}</strong><span>saved roles</span></div>
+            </div>
+            <div class="jobs-layout">
+              <section class="panel job-form-panel">
+                <p class="eyebrow">SAVE AN OPPORTUNITY</p>
+                <h2>Keep it on your radar</h2>
+                <form id="job-form" onsubmit={saveJob}>
+                  <label class="field"
+                    ><span>Job title *</span><input
+                      id="job-title"
+                      name="title"
+                      required
+                      maxlength="200"
+                      placeholder="e.g. Senior Product Designer"
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>Company *</span><input
+                      name="company"
+                      required
+                      maxlength="200"
+                      placeholder="Company name"
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>Job listing URL *</span><input
+                      name="url"
+                      type="url"
+                      required
+                      placeholder="https://…"
+                    /></label
+                  >
+                  <label class="field"
+                    ><span>Job description</span><textarea
+                      name="description"
+                      rows="5"
+                      maxlength="15000"
+                      placeholder="Paste the listing here to assess your fit and draft a cover letter."
+                    ></textarea></label
+                  >
+                  <label class="field"
+                    ><span>Your notes</span><textarea
+                      name="notes"
+                      rows="3"
+                      placeholder="What caught your eye? Anything to ask about?"
+                    ></textarea></label
+                  >
+                  <button class="button button-dark button-full" type="submit"
+                    >Save this role <span aria-hidden="true">→</span></button
+                  >
+                  <p class="form-footnote">
+                    Job listings are saved manually. We don’t log into or scrape job sites.
+                  </p>
+                </form>
+              </section>
+              <section class="job-list-section">
+                <div class="list-toolbar">
+                  <h2>Saved roles <span id="list-count">({jobs.length})</span></h2>
+                  <label class="sr-only" for="job-filter">Filter saved jobs</label><select
+                    id="job-filter"
+                    aria-label="Filter saved jobs"
+                    bind:value={jobFilter}
+                    ><option value="all">All roles</option><option value="Saved">Saved</option
+                    ><option value="Applying">Applying</option><option value="Applied"
+                      >Applied</option
+                    ><option value="Interviewing">Interviewing</option><option value="Archived"
+                      >Archived</option
+                    ></select
+                  >
+                </div>
+                <div class="job-list" id="job-list">
+                  {#if jobs.length === 0}
+                    <div class="empty-state">
+                      <span class="empty-mark">✳</span>
+                      <h3>Your next possibility starts here.</h3>
+                      <p>
+                        Save a job listing on the left to keep it close and start planning your next
+                        step.
+                      </p>
+                    </div>
+                  {:else if visibleJobs.length === 0}
+                    <div class="empty-state compact-empty">No saved jobs match this filter.</div>
+                  {/if}
+                  {#each visibleJobs as job (job.id)}
+                    <article class="job-card" class:studio-job={activeJobId === job.id}>
+                      <div class="job-card-top">
+                        <div class="job-company">
+                          <span class="company-mark"
+                            >{(job.company || '?').trim().slice(0, 1).toUpperCase()}</span
                           >
-                        </div>
-                        <p>{job.assessment.rationale}</p>
-                        {#if isAssessmentStale(job)}
-                          <p class="assessment-stale">
-                            Your profile, role details, or recruiter context changed — rerun this
-                            assessment.
-                          </p>
-                        {/if}
-                        {#if job.assessment.nextAction}
-                          <p class="assessment-next">
-                            <strong>Next action:</strong>
-                            {job.assessment.nextAction}
-                          </p>
-                        {/if}
-                        {#if job.assessment.strengths.length || job.assessment.concerns.length}
-                          <div
-                            class="assessment-pros-cons"
-                            aria-label="Fit assessment pros and cons"
-                          >
-                            {#if job.assessment.strengths.length}
-                              <section class="assessment-pros">
-                                <h4>Pros</h4>
-                                <ul>
-                                  {#each job.assessment.strengths as strength (strength)}
-                                    <li>{strength}</li>
-                                  {/each}
-                                </ul>
-                              </section>
-                            {/if}
-                            {#if job.assessment.concerns.length}
-                              <section class="assessment-cons">
-                                <h4>Cons</h4>
-                                <ul>
-                                  {#each job.assessment.concerns as concern (concern)}
-                                    <li>{concern}</li>
-                                  {/each}
-                                </ul>
-                              </section>
-                            {/if}
-                          </div>
-                        {/if}
-                        {#if job.assessment.unansweredQuestions.length}
-                          <details class="assessment-questions">
-                            <summary>Questions to clarify</summary>
-                            <ul>
-                              {#each job.assessment.unansweredQuestions as question (question)}
-                                <li class="assessment-question">
-                                  <span>{question}</span>
-                                  <textarea
-                                    aria-label={`Your answer: ${question}`}
-                                    placeholder="Your answer…"
-                                    value={assessmentAnswers[assessmentAnswerKey(job.id, question)] ?? ''}
-                                    oninput={(event) => updateAssessmentAnswer(job.id, question, event)}
-                                  ></textarea>
-                                  <button
-                                    class="text-button assessment-answer-save"
-                                    type="button"
-                                    disabled={!assessmentAnswers[assessmentAnswerKey(job.id, question)]?.trim()}
-                                    onclick={() => saveAssessmentAnswer(job, question)}
-                                    >Save to profile</button
-                                  >
-                                </li>
-                              {/each}
-                            </ul>
-                            {#if assessmentAnswerStatus}
-                              <p class="assessment-answer-status" role="status">{assessmentAnswerStatus}</p>
-                            {/if}
-                          </details>
-                        {/if}
-                      </section>
-                    {/if}
-                    {#if activeJobId === job.id}
-                      <section
-                        class="job-application-studio"
-                        aria-label={`Application studio for ${job.title}`}
-                      >
-                        <div class="workspace-heading">
                           <div>
-                            <p class="eyebrow">APPLICATION STUDIO</p>
-                            <h4>Prepare for <em>{job.company}</em></h4>
+                            <h3>{job.title}</h3>
+                            <p>{job.company}</p>
                           </div>
-                          <button
-                            class="text-button"
-                            type="button"
-                            disabled={generatingLetter || applicationChatBusy}
-                            onclick={closeLetter}>Close studio</button
-                          >
-                          <button
-                            class="text-button"
-                            type="button"
-                            disabled={generatingLetter || applicationChatBusy}
-                            onclick={openNewJobForm}>+ Add a new saved job</button
-                          >
                         </div>
+                        <select
+                          class={`status-select ${statusClass(job.status)}`}
+                          aria-label={`Application status for ${job.title} at ${job.company}`}
+                          value={job.status}
+                          onchange={(event) => updateJobStatus(job, event)}
+                        >
+                          {#each statuses as status (status)}<option value={status}>{status}</option
+                            >{/each}
+                        </select>
+                      </div>
+                      {#if job.notes}<p class="job-notes">{job.notes}</p>{/if}
+                      {#if job.assessment}
+                        <section class="job-assessment" aria-label={`Assessment for ${job.title}`}>
+                          <div class="assessment-heading">
+                            <strong>AI fit assessment</strong>
+                            <span class={`match-score ${scoreClass(job.assessment.score)}`}
+                              >{job.assessment.score}% fit</span
+                            >
+                          </div>
+                          <p>{job.assessment.rationale}</p>
+                          {#if isAssessmentStale(job)}
+                            <p class="assessment-stale">
+                              Your profile, role details, or recruiter context changed — rerun this
+                              assessment.
+                            </p>
+                          {/if}
+                          {#if job.assessment.nextAction}
+                            <p class="assessment-next">
+                              <strong>Next action:</strong>
+                              {job.assessment.nextAction}
+                            </p>
+                          {/if}
+                          {#if job.assessment.strengths.length || job.assessment.concerns.length}
+                            <div
+                              class="assessment-pros-cons"
+                              aria-label="Fit assessment pros and cons"
+                            >
+                              {#if job.assessment.strengths.length}
+                                <section class="assessment-pros">
+                                  <h4>Pros</h4>
+                                  <ul>
+                                    {#each job.assessment.strengths as strength (strength)}
+                                      <li>{strength}</li>
+                                    {/each}
+                                  </ul>
+                                </section>
+                              {/if}
+                              {#if job.assessment.concerns.length}
+                                <section class="assessment-cons">
+                                  <h4>Cons</h4>
+                                  <ul>
+                                    {#each job.assessment.concerns as concern (concern)}
+                                      <li>{concern}</li>
+                                    {/each}
+                                  </ul>
+                                </section>
+                              {/if}
+                            </div>
+                          {/if}
+                          {#if job.assessment.unansweredQuestions.length}
+                            <details class="assessment-questions">
+                              <summary>Questions to clarify</summary>
+                              <ul>
+                                {#each job.assessment.unansweredQuestions as question (question)}
+                                  <li class="assessment-question">
+                                    <span>{question}</span>
+                                    <textarea
+                                      aria-label={`Your answer: ${question}`}
+                                      placeholder="Your answer…"
+                                      value={assessmentAnswers[
+                                        assessmentAnswerKey(job.id, question)
+                                      ] ?? ''}
+                                      oninput={(event) =>
+                                        updateAssessmentAnswer(job.id, question, event)}
+                                    ></textarea>
+                                    <button
+                                      class="text-button assessment-answer-save"
+                                      type="button"
+                                      disabled={!assessmentAnswers[
+                                        assessmentAnswerKey(job.id, question)
+                                      ]?.trim()}
+                                      onclick={() => saveAssessmentAnswer(job, question)}
+                                      >Save to profile</button
+                                    >
+                                  </li>
+                                {/each}
+                              </ul>
+                              {#if assessmentAnswerStatus}
+                                <p class="assessment-answer-status" role="status">
+                                  {assessmentAnswerStatus}
+                                </p>
+                              {/if}
+                            </details>
+                          {/if}
+                        </section>
+                      {/if}
+                      {#if activeJobId === job.id}
+                        <section
+                          class="job-application-studio"
+                          aria-label={`Application studio for ${job.title}`}
+                        >
+                          <div class="workspace-heading">
+                            <div>
+                              <p class="eyebrow">APPLICATION STUDIO</p>
+                              <h4>Prepare for <em>{job.company}</em></h4>
+                            </div>
+                            <button
+                              class="text-button"
+                              type="button"
+                              disabled={generatingLetter || applicationChatBusy}
+                              onclick={closeLetter}>Close studio</button
+                            >
+                            <button
+                              class="text-button"
+                              type="button"
+                              disabled={generatingLetter || applicationChatBusy}
+                              onclick={openNewJobForm}>+ Add a new saved job</button
+                            >
+                          </div>
+                          <p class="workspace-privacy">
+                            The selected provider receives your profile, this job description, your
+                            application-context chat, and any user-authored context you include.
+                            Everything here is kept in this browser.
+                          </p>
+                          <div class="workspace-grid">
+                            <section class="workspace-section">
+                              <h4>Cover letter</h4>
+                              <label class="field"
+                                ><span>AI provider</span><select bind:value={letterProvider}>
+                                  {#each providers as provider (provider)}<option
+                                      value={provider}
+                                      disabled={!providerSettings[provider].configured}
+                                      >{providerNames[provider]}{providerSettings[provider]
+                                        .configured
+                                        ? ''
+                                        : ' (no key)'}</option
+                                    >{/each}
+                                </select></label
+                              >
+                              <label class="field"
+                                ><span>Job description</span><textarea
+                                  rows="5"
+                                  bind:value={letterDescription}
+                                  oninput={persistLetterSession}
+                                ></textarea></label
+                              >
+                              <label class="field"
+                                ><span>Starting letter (optional)</span><textarea
+                                  rows="5"
+                                  maxlength="15000"
+                                  bind:value={letterStartingLetter}
+                                  oninput={persistLetterSession}
+                                ></textarea></label
+                              >
+                              {#if baseLetters.length}
+                                <div class="base-letter-picker">
+                                  <strong>Reusable base letters</strong>
+                                  <ul class="base-letter-list">
+                                    {#each baseLetters as base (base.id)}<li>
+                                        <span
+                                          ><strong>{base.name}</strong><small
+                                            >{base.sourceJobTitle || 'Saved in this browser'}</small
+                                          ></span
+                                        ><button
+                                          class="text-button"
+                                          type="button"
+                                          onclick={() => useBaseLetter(base)}>Use</button
+                                        >
+                                      </li>{/each}
+                                  </ul>
+                                </div>
+                              {/if}
+                              <div class="dialog-actions">
+                                <span class="status-message" role="status">{letterStatus}</span
+                                ><button
+                                  class="button button-dark"
+                                  type="button"
+                                  disabled={generatingLetter ||
+                                    !providerSettings[letterProvider].configured}
+                                  onclick={() => generateLetter()}
+                                  >{generatingLetter ? 'Writing…' : 'Generate letter ✳'}</button
+                                >
+                              </div>
+                              <label class="field"
+                                ><span>Current draft</span><textarea
+                                  rows="10"
+                                  maxlength="15000"
+                                  bind:this={letterResultField}
+                                  bind:value={letterResult}
+                                  oninput={persistLetterSession}
+                                ></textarea></label
+                              >
+                              <form
+                                class="letter-revision-form"
+                                onsubmit={(event) => {
+                                  event.preventDefault();
+                                  void generateLetter(true);
+                                }}
+                              >
+                                <label class="field"
+                                  ><span>Ask for a change</span><textarea
+                                    rows="3"
+                                    maxlength="2500"
+                                    bind:value={letterRevisionRequest}
+                                  ></textarea></label
+                                >
+                                <div class="dialog-actions">
+                                  <button
+                                    class="button button-light"
+                                    type="submit"
+                                    disabled={generatingLetter || !letterResult.trim()}
+                                    >Adjust letter</button
+                                  >{#if letterMessages.length || letterStartingLetter || letterResult}<button
+                                      class="text-button"
+                                      type="button"
+                                      disabled={generatingLetter}
+                                      onclick={clearLetterSession}>Clear letter session</button
+                                    >{/if}
+                                </div>
+                              </form>
+                              {#if letterVersions.length}<details class="letter-versions">
+                                  <summary>Generated versions ({letterVersions.length})</summary>
+                                  <ul>
+                                    {#each [...letterVersions].reverse() as version (version.id)}<li
+                                      >
+                                        <span
+                                          ><strong
+                                            >{new Date(version.createdAt).toLocaleString()}</strong
+                                          ><small>{version.request}</small></span
+                                        ><button
+                                          class="text-button"
+                                          type="button"
+                                          onclick={() => restoreLetterVersion(version)}
+                                          >Restore</button
+                                        >
+                                      </li>{/each}
+                                  </ul>
+                                </details>{/if}
+                              <div class="letter-result-actions">
+                                <button
+                                  class="text-button"
+                                  type="button"
+                                  onclick={promoteCurrentLetter}>Save as base ✳</button
+                                ><button class="text-button" type="button" onclick={copyLetter}
+                                  >Copy</button
+                                ><button class="text-button" type="button" onclick={downloadLetter}
+                                  >Download .txt ↓</button
+                                >
+                              </div>
+                            </section>
+                            <section class="workspace-section application-chat">
+                              <h4>Application-context chat</h4>
+                              <p class="field-hint">
+                                Ask about the role or practise answers to likely application
+                                questions. Verify every answer against your own experience.
+                              </p>
+                              <label class="field"
+                                ><span>AI provider</span><select
+                                  bind:value={applicationChatProvider}
+                                  ><option
+                                    value="openai"
+                                    disabled={!providerSettings.openai.configured}>OpenAI</option
+                                  ><option
+                                    value="gemini"
+                                    disabled={!providerSettings.gemini.configured}
+                                    >Google Gemini</option
+                                  ><option
+                                    value="anthropic"
+                                    disabled={!providerSettings.anthropic.configured}
+                                    >Anthropic Claude</option
+                                  ></select
+                                ></label
+                              >
+                              {#if applicationChatMessages.length}<div
+                                  class="application-chat-messages"
+                                >
+                                  {#each applicationChatMessages as message, index (`${message.role}-${index}`)}<article
+                                      class:letter-message-user={message.role === 'user'}
+                                      class="letter-message"
+                                    >
+                                      <strong
+                                        >{message.role === 'user'
+                                          ? 'You'
+                                          : 'Application coach'}</strong
+                                      >
+                                      <p>{message.content}</p>
+                                    </article>{/each}
+                                </div>{/if}
+                              <form
+                                class="letter-revision-form"
+                                onsubmit={(event) => {
+                                  event.preventDefault();
+                                  void sendApplicationChat();
+                                }}
+                              >
+                                <label class="field"
+                                  ><span>Your question or practice prompt</span><textarea
+                                    rows="5"
+                                    maxlength="2500"
+                                    bind:value={applicationChatInput}
+                                    placeholder="What does this role seem to prioritise? Practise: tell me about a project relevant to it."
+                                  ></textarea></label
+                                >
+                                <div class="dialog-actions">
+                                  <span class="status-message" role="status"
+                                    >{applicationChatStatus}</span
+                                  ><button
+                                    class="button button-dark"
+                                    type="submit"
+                                    disabled={applicationChatBusy ||
+                                      !applicationChatInput.trim() ||
+                                      !providerSettings[applicationChatProvider].configured}
+                                    >{applicationChatBusy ? 'Thinking…' : 'Ask coach'}</button
+                                  >
+                                </div>
+                              </form>
+                              {#if applicationChatMessages.length}<button
+                                  class="text-button"
+                                  type="button"
+                                  disabled={applicationChatBusy}
+                                  onclick={clearApplicationChat}>Clear application chat</button
+                                >{/if}
+                            </section>
+                          </div>
+                        </section>
+                      {/if}
+                      <details class="job-workspace">
+                        <summary>Research &amp; tracking</summary>
                         <p class="workspace-privacy">
-                          The selected provider receives your profile, this job description, your
-                          application-context chat, and any user-authored context you include.
-                          Everything here is kept in this browser.
+                          Kept only in this browser. Research is user-authored; JobFinder does not
+                          fetch listings or company sites.
                         </p>
                         <div class="workspace-grid">
                           <section class="workspace-section">
-                            <h4>Cover letter</h4>
+                            <h4>Research</h4>
                             <label class="field"
-                              ><span>AI provider</span><select bind:value={letterProvider}>
-                                {#each providers as provider (provider)}<option
-                                    value={provider}
-                                    disabled={!providerSettings[provider].configured}
-                                    >{providerNames[provider]}{providerSettings[provider].configured
-                                      ? ''
-                                      : ' (no key)'}</option
-                                  >{/each}
-                              </select></label
-                            >
-                            <label class="field"
-                              ><span>Job description</span><textarea
-                                rows="5"
-                                bind:value={letterDescription}
-                                oninput={persistLetterSession}
+                              ><span>Notes</span><textarea
+                                rows="3"
+                                maxlength="10000"
+                                value={job.research?.notes ?? ''}
+                                onblur={(event) =>
+                                  updateResearch(job, 'notes', event.currentTarget.value)}
+                                placeholder="What you learn from material you choose to review"
                               ></textarea></label
                             >
                             <label class="field"
-                              ><span>Starting letter (optional)</span><textarea
-                                rows="5"
-                                maxlength="15000"
-                                bind:value={letterStartingLetter}
-                                oninput={persistLetterSession}
+                              ><span>Questions to investigate</span><textarea
+                                rows="2"
+                                maxlength="10000"
+                                value={job.research?.questions ?? ''}
+                                onblur={(event) =>
+                                  updateResearch(job, 'questions', event.currentTarget.value)}
+                                placeholder="Questions for the recruiter, hiring team, or your own research"
                               ></textarea></label
                             >
-                            {#if baseLetters.length}
-                              <div class="base-letter-picker">
-                                <strong>Reusable base letters</strong>
-                                <ul class="base-letter-list">
-                                  {#each baseLetters as base (base.id)}<li>
-                                      <span
-                                        ><strong>{base.name}</strong><small
-                                          >{base.sourceJobTitle || 'Saved in this browser'}</small
-                                        ></span
-                                      ><button
-                                        class="text-button"
-                                        type="button"
-                                        onclick={() => useBaseLetter(base)}>Use</button
-                                      >
-                                    </li>{/each}
-                                </ul>
-                              </div>
-                            {/if}
-                            <div class="dialog-actions">
-                              <span class="status-message" role="status">{letterStatus}</span
-                              ><button
-                                class="button button-dark"
-                                type="button"
-                                disabled={generatingLetter ||
-                                  !providerSettings[letterProvider].configured}
-                                onclick={() => generateLetter()}
-                                >{generatingLetter ? 'Writing…' : 'Generate letter ✳'}</button
-                              >
-                            </div>
                             <label class="field"
-                              ><span>Current draft</span><textarea
-                                rows="10"
-                                maxlength="15000"
-                                bind:this={letterResultField}
-                                bind:value={letterResult}
-                                oninput={persistLetterSession}
+                              ><span>Contacts</span><textarea
+                                rows="2"
+                                maxlength="10000"
+                                value={job.research?.contacts ?? ''}
+                                onblur={(event) =>
+                                  updateResearch(job, 'contacts', event.currentTarget.value)}
+                                placeholder="Names, context, and how to follow up"
+                              ></textarea></label
+                            >
+                            <label class="field"
+                              ><span>Research follow-ups</span><textarea
+                                rows="2"
+                                maxlength="10000"
+                                value={job.research?.followUps ?? ''}
+                                onblur={(event) =>
+                                  updateResearch(job, 'followUps', event.currentTarget.value)}
+                                placeholder="Things to do before applying or interviewing"
                               ></textarea></label
                             >
                             <form
-                              class="letter-revision-form"
-                              onsubmit={(event) => {
-                                event.preventDefault();
-                                void generateLetter(true);
-                              }}
+                              class="research-link-form"
+                              onsubmit={(event) => addResearchLink(job, event)}
                             >
                               <label class="field"
-                                ><span>Ask for a change</span><textarea
-                                  rows="3"
-                                  maxlength="2500"
-                                  bind:value={letterRevisionRequest}
-                                ></textarea></label
+                                ><span>Source URL</span><input
+                                  name="research-url"
+                                  type="url"
+                                  required
+                                  placeholder="https://…"
+                                /></label
                               >
-                              <div class="dialog-actions">
-                                <button
-                                  class="button button-light"
-                                  type="submit"
-                                  disabled={generatingLetter || !letterResult.trim()}
-                                  >Adjust letter</button
-                                >{#if letterMessages.length || letterStartingLetter || letterResult}<button
-                                    class="text-button"
-                                    type="button"
-                                    disabled={generatingLetter}
-                                    onclick={clearLetterSession}>Clear letter session</button
-                                  >{/if}
-                              </div>
+                              <label class="field"
+                                ><span>Label (optional)</span><input
+                                  name="research-label"
+                                  maxlength="200"
+                                  placeholder="e.g. Product blog"
+                                /></label
+                              >
+                              <button class="button button-light" type="submit">Add link</button>
                             </form>
-                            {#if letterVersions.length}<details class="letter-versions">
-                                <summary>Generated versions ({letterVersions.length})</summary>
-                                <ul>
-                                  {#each [...letterVersions].reverse() as version (version.id)}<li>
-                                      <span
-                                        ><strong
-                                          >{new Date(version.createdAt).toLocaleString()}</strong
-                                        ><small>{version.request}</small></span
-                                      ><button
-                                        class="text-button"
-                                        type="button"
-                                        onclick={() => restoreLetterVersion(version)}
-                                        >Restore</button
-                                      >
-                                    </li>{/each}
-                                </ul>
-                              </details>{/if}
-                            <div class="letter-result-actions">
-                              <button
-                                class="text-button"
-                                type="button"
-                                onclick={promoteCurrentLetter}>Save as base ✳</button
-                              ><button class="text-button" type="button" onclick={copyLetter}
-                                >Copy</button
-                              ><button class="text-button" type="button" onclick={downloadLetter}
-                                >Download .txt ↓</button
-                              >
-                            </div>
-                          </section>
-                          <section class="workspace-section application-chat">
-                            <h4>Application-context chat</h4>
-                            <p class="field-hint">
-                              Ask about the role or practise answers to likely application
-                              questions. Verify every answer against your own experience.
-                            </p>
-                            <label class="field"
-                              ><span>AI provider</span><select bind:value={applicationChatProvider}
-                                ><option
-                                  value="openai"
-                                  disabled={!providerSettings.openai.configured}>OpenAI</option
-                                ><option
-                                  value="gemini"
-                                  disabled={!providerSettings.gemini.configured}
-                                  >Google Gemini</option
-                                ><option
-                                  value="anthropic"
-                                  disabled={!providerSettings.anthropic.configured}
-                                  >Anthropic Claude</option
-                                ></select
-                              ></label
-                            >
-                            {#if applicationChatMessages.length}<div
-                                class="application-chat-messages"
-                              >
-                                {#each applicationChatMessages as message, index (`${message.role}-${index}`)}<article
-                                    class:letter-message-user={message.role === 'user'}
-                                    class="letter-message"
-                                  >
-                                    <strong
-                                      >{message.role === 'user'
-                                        ? 'You'
-                                        : 'Application coach'}</strong
+                            {#if job.research?.links.length}
+                              <ul class="research-links">
+                                {#each job.research.links as link (link.id)}
+                                  <li>
+                                    <a href={link.url} target="_blank" rel="noopener noreferrer"
+                                      >{link.label} ↗</a
+                                    ><button
+                                      type="button"
+                                      onclick={() => removeResearchLink(job, link.id)}
+                                      >Remove</button
                                     >
-                                    <p>{message.content}</p>
-                                  </article>{/each}
-                              </div>{/if}
+                                  </li>
+                                {/each}
+                              </ul>
+                            {/if}
+                          </section>
+                          <section class="workspace-section">
+                            <h4>Application tracker</h4>
+                            <div class="date-fields">
+                              <label class="field"
+                                ><span>Saved</span><input
+                                  type="date"
+                                  value={job.tracking?.savedOn ?? ''}
+                                  onchange={(event) =>
+                                    updateTracking(job, 'savedOn', event.currentTarget.value)}
+                                /></label
+                              >
+                              <label class="field"
+                                ><span>Applied</span><input
+                                  type="date"
+                                  value={job.tracking?.appliedOn ?? ''}
+                                  onchange={(event) =>
+                                    updateTracking(job, 'appliedOn', event.currentTarget.value)}
+                                /></label
+                              >
+                              <label class="field"
+                                ><span>Follow-up</span><input
+                                  type="date"
+                                  value={job.tracking?.followUpOn ?? ''}
+                                  onchange={(event) =>
+                                    updateTracking(job, 'followUpOn', event.currentTarget.value)}
+                                /></label
+                              >
+                              <label class="field"
+                                ><span>Interview</span><input
+                                  type="date"
+                                  value={job.tracking?.interviewOn ?? ''}
+                                  onchange={(event) =>
+                                    updateTracking(job, 'interviewOn', event.currentTarget.value)}
+                                /></label
+                              >
+                            </div>
+                            <label class="field"
+                              ><span>Next action</span><textarea
+                                rows="2"
+                                maxlength="2000"
+                                value={job.tracking?.nextAction ?? ''}
+                                onblur={(event) =>
+                                  updateTracking(job, 'nextAction', event.currentTarget.value)}
+                                placeholder="What will you do next?"
+                              ></textarea></label
+                            >
+                            <label class="field"
+                              ><span>Deadline</span><input
+                                type="date"
+                                value={job.tracking?.deadline ?? ''}
+                                onchange={(event) =>
+                                  updateTracking(job, 'deadline', event.currentTarget.value)}
+                              /></label
+                            >
                             <form
-                              class="letter-revision-form"
-                              onsubmit={(event) => {
-                                event.preventDefault();
-                                void sendApplicationChat();
-                              }}
+                              class="activity-form"
+                              onsubmit={(event) => addActivity(job, event)}
                             >
                               <label class="field"
-                                ><span>Your question or practice prompt</span><textarea
-                                  rows="5"
-                                  maxlength="2500"
-                                  bind:value={applicationChatInput}
-                                  placeholder="What does this role seem to prioritise? Practise: tell me about a project relevant to it."
-                                ></textarea></label
+                                ><span>Add activity</span><input
+                                  name="activity"
+                                  required
+                                  maxlength="1000"
+                                  placeholder="e.g. Sent a follow-up email"
+                                /></label
                               >
-                              <div class="dialog-actions">
-                                <span class="status-message" role="status"
-                                  >{applicationChatStatus}</span
-                                ><button
-                                  class="button button-dark"
-                                  type="submit"
-                                  disabled={applicationChatBusy ||
-                                    !applicationChatInput.trim() ||
-                                    !providerSettings[applicationChatProvider].configured}
-                                  >{applicationChatBusy ? 'Thinking…' : 'Ask coach'}</button
-                                >
-                              </div>
+                              <button class="button button-light" type="submit">Add activity</button
+                              >
                             </form>
-                            {#if applicationChatMessages.length}<button
-                                class="text-button"
-                                type="button"
-                                disabled={applicationChatBusy}
-                                onclick={clearApplicationChat}>Clear application chat</button
-                              >{/if}
+                            {#if job.tracking?.activity.length}
+                              <ol class="activity-history">
+                                {#each job.tracking.activity as item (item.id)}
+                                  <li>
+                                    <span>{item.text}</span><time datetime={item.happenedAt}
+                                      >{new Date(item.happenedAt).toLocaleDateString()}</time
+                                    >
+                                  </li>
+                                {/each}
+                              </ol>
+                            {/if}
                           </section>
                         </div>
-                      </section>
-                    {/if}
-                    <details class="job-workspace">
-                      <summary>Research &amp; tracking</summary>
-                      <p class="workspace-privacy">
-                        Kept only in this browser. Research is user-authored; JobFinder does not
-                        fetch listings or company sites.
-                      </p>
-                      <div class="workspace-grid">
-                        <section class="workspace-section">
-                          <h4>Research</h4>
-                          <label class="field"
-                            ><span>Notes</span><textarea
-                              rows="3"
-                              maxlength="10000"
-                              value={job.research?.notes ?? ''}
-                              onblur={(event) =>
-                                updateResearch(job, 'notes', event.currentTarget.value)}
-                              placeholder="What you learn from material you choose to review"
-                            ></textarea></label
+                      </details>
+                      <div class="job-card-footer">
+                        {#if linkFor(job.url)}
+                          <a
+                            class="job-action-link"
+                            href={linkFor(job.url)}
+                            target="_blank"
+                            rel="noopener noreferrer">View listing ↗</a
                           >
-                          <label class="field"
-                            ><span>Questions to investigate</span><textarea
-                              rows="2"
-                              maxlength="10000"
-                              value={job.research?.questions ?? ''}
-                              onblur={(event) =>
-                                updateResearch(job, 'questions', event.currentTarget.value)}
-                              placeholder="Questions for the recruiter, hiring team, or your own research"
-                            ></textarea></label
-                          >
-                          <label class="field"
-                            ><span>Contacts</span><textarea
-                              rows="2"
-                              maxlength="10000"
-                              value={job.research?.contacts ?? ''}
-                              onblur={(event) =>
-                                updateResearch(job, 'contacts', event.currentTarget.value)}
-                              placeholder="Names, context, and how to follow up"
-                            ></textarea></label
-                          >
-                          <label class="field"
-                            ><span>Research follow-ups</span><textarea
-                              rows="2"
-                              maxlength="10000"
-                              value={job.research?.followUps ?? ''}
-                              onblur={(event) =>
-                                updateResearch(job, 'followUps', event.currentTarget.value)}
-                              placeholder="Things to do before applying or interviewing"
-                            ></textarea></label
-                          >
-                          <form
-                            class="research-link-form"
-                            onsubmit={(event) => addResearchLink(job, event)}
-                          >
-                            <label class="field"
-                              ><span>Source URL</span><input
-                                name="research-url"
-                                type="url"
-                                required
-                                placeholder="https://…"
-                              /></label
-                            >
-                            <label class="field"
-                              ><span>Label (optional)</span><input
-                                name="research-label"
-                                maxlength="200"
-                                placeholder="e.g. Product blog"
-                              /></label
-                            >
-                            <button class="button button-light" type="submit">Add link</button>
-                          </form>
-                          {#if job.research?.links.length}
-                            <ul class="research-links">
-                              {#each job.research.links as link (link.id)}
-                                <li>
-                                  <a href={link.url} target="_blank" rel="noopener noreferrer"
-                                    >{link.label} ↗</a
-                                  ><button
-                                    type="button"
-                                    onclick={() => removeResearchLink(job, link.id)}>Remove</button
-                                  >
-                                </li>
-                              {/each}
-                            </ul>
-                          {/if}
-                        </section>
-                        <section class="workspace-section">
-                          <h4>Application tracker</h4>
-                          <div class="date-fields">
-                            <label class="field"
-                              ><span>Saved</span><input
-                                type="date"
-                                value={job.tracking?.savedOn ?? ''}
-                                onchange={(event) =>
-                                  updateTracking(job, 'savedOn', event.currentTarget.value)}
-                              /></label
-                            >
-                            <label class="field"
-                              ><span>Applied</span><input
-                                type="date"
-                                value={job.tracking?.appliedOn ?? ''}
-                                onchange={(event) =>
-                                  updateTracking(job, 'appliedOn', event.currentTarget.value)}
-                              /></label
-                            >
-                            <label class="field"
-                              ><span>Follow-up</span><input
-                                type="date"
-                                value={job.tracking?.followUpOn ?? ''}
-                                onchange={(event) =>
-                                  updateTracking(job, 'followUpOn', event.currentTarget.value)}
-                              /></label
-                            >
-                            <label class="field"
-                              ><span>Interview</span><input
-                                type="date"
-                                value={job.tracking?.interviewOn ?? ''}
-                                onchange={(event) =>
-                                  updateTracking(job, 'interviewOn', event.currentTarget.value)}
-                              /></label
-                            >
-                          </div>
-                          <label class="field"
-                            ><span>Next action</span><textarea
-                              rows="2"
-                              maxlength="2000"
-                              value={job.tracking?.nextAction ?? ''}
-                              onblur={(event) =>
-                                updateTracking(job, 'nextAction', event.currentTarget.value)}
-                              placeholder="What will you do next?"
-                            ></textarea></label
-                          >
-                          <label class="field"
-                            ><span>Deadline</span><input
-                              type="date"
-                              value={job.tracking?.deadline ?? ''}
-                              onchange={(event) =>
-                                updateTracking(job, 'deadline', event.currentTarget.value)}
-                            /></label
-                          >
-                          <form class="activity-form" onsubmit={(event) => addActivity(job, event)}>
-                            <label class="field"
-                              ><span>Add activity</span><input
-                                name="activity"
-                                required
-                                maxlength="1000"
-                                placeholder="e.g. Sent a follow-up email"
-                              /></label
-                            >
-                            <button class="button button-light" type="submit">Add activity</button>
-                          </form>
-                          {#if job.tracking?.activity.length}
-                            <ol class="activity-history">
-                              {#each job.tracking.activity as item (item.id)}
-                                <li>
-                                  <span>{item.text}</span><time datetime={item.happenedAt}
-                                    >{new Date(item.happenedAt).toLocaleDateString()}</time
-                                  >
-                                </li>
-                              {/each}
-                            </ol>
-                          {/if}
-                        </section>
-                      </div>
-                    </details>
-                    <div class="job-card-footer">
-                      {#if linkFor(job.url)}
-                        <a
-                          class="job-action-link"
-                          href={linkFor(job.url)}
-                          target="_blank"
-                          rel="noopener noreferrer">View listing ↗</a
-                        >
-                      {/if}
-                      <button
-                        class="job-action-link"
-                        type="button"
-                        disabled={generatingLetter || applicationChatBusy}
-                        onclick={() => openLetter(job)}>Open application studio ✳</button
-                      >
-                      <button
-                        class="job-action-link"
-                        type="button"
-                        onclick={() => openAssessment(job)}
-                        >{job.assessment ? 'Rerun assessment' : 'Rate this role ✳'}</button
-                      >
-                      {#if job.assessment}
+                        {/if}
                         <button
                           class="job-action-link"
                           type="button"
-                          onclick={() => discardAssessment(job)}>Discard assessment</button
+                          disabled={generatingLetter || applicationChatBusy}
+                          onclick={() => openLetter(job)}>Open application studio ✳</button
                         >
-                      {/if}
-                      <button class="job-remove" type="button" onclick={() => removeJob(job.id)}
-                        >Remove</button
-                      >
-                    </div>
-                  </article>
-                {/each}
-              </div>
-            </section>
-          </div>
-        </section>
-      {/if}
-
-      {#if view === 'recruiter'}
-        <section class="view" id="view-recruiter">
-          <div class="inner-heading">
-            <p class="eyebrow">YOUR AI RECRUITER</p>
-            <h1>Tell your story, <em>get found.</em></h1>
-            <p class="heading-copy">
-              The recruiter reviews your profile, asks about your experience in detail and points
-              out skills you may have overlooked.
-            </p>
-          </div>
-          <div class="form-note recruiter-data-note">
-            <span aria-hidden="true">✳</span>
-            <div>
-              <strong>What is shared when you send a message.</strong> Your current profile (including
-              any resume text) and up to the latest 30 recruiter messages are sent to the selected provider
-              to generate a reply. They remain in this browser until you clear them; the provider handles
-              submitted content under its own data policy. Skills are not added to your profile unless
-              you choose to add them.
+                        <button
+                          class="job-action-link"
+                          type="button"
+                          onclick={() => openAssessment(job)}
+                          >{job.assessment ? 'Rerun assessment' : 'Rate this role ✳'}</button
+                        >
+                        {#if job.assessment}
+                          <button
+                            class="job-action-link"
+                            type="button"
+                            onclick={() => discardAssessment(job)}>Discard assessment</button
+                          >
+                        {/if}
+                        <button class="job-remove" type="button" onclick={() => removeJob(job.id)}
+                          >Remove</button
+                        >
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              </section>
             </div>
-          </div>
-          <article class="panel chat-panel">
-            <div class="chat-toolbar">
+          </section>
+        {/if}
+
+        {#if view === 'recruiter'}
+          <section class="view" id="view-recruiter">
+            <div class="inner-heading">
+              <p class="eyebrow">YOUR AI RECRUITER</p>
+              <h1>Tell your story, <em>get found.</em></h1>
+              <p class="heading-copy">
+                The recruiter reviews your profile, asks about your experience in detail and points
+                out skills you may have overlooked.
+              </p>
+            </div>
+            <div class="form-note recruiter-data-note">
+              <span aria-hidden="true">✳</span>
+              <div>
+                <strong>What is shared when you send a message.</strong> Your current profile (including
+                any resume text) and up to the latest 30 recruiter messages are sent to the selected provider
+                to generate a reply. They remain in this browser until you clear them; the provider handles
+                submitted content under its own data policy. Skills are not added to your profile unless
+                you choose to add them.
+              </div>
+            </div>
+            <article class="panel chat-panel">
+              <div class="chat-toolbar">
+                <label class="field"
+                  ><span>AI provider</span><select
+                    value={chatProvider}
+                    disabled={chatBusy}
+                    onchange={changeChatProvider}
+                    >{#each providers as provider (provider)}<option value={provider}
+                        >{providerNames[provider]}{providerSettings[provider].configured
+                          ? ''
+                          : ' (no key)'}</option
+                      >{/each}</select
+                  ></label
+                >
+                <button
+                  class="button button-dark"
+                  type="button"
+                  disabled={chatBusy || !providerSettings[chatProvider].configured}
+                  onclick={restartChat}
+                  >{chatMessages.length ? 'Restart interview' : 'Start interview'}</button
+                >
+                <button
+                  class="text-button chat-clear"
+                  type="button"
+                  disabled={chatBusy ||
+                    (!chatMessages.length && !discoveredSkills.length && !alertSuggestions.length)}
+                  onclick={clearRecruiterConversation}>Clear chat</button
+                >
+                <button
+                  class="button button-dark"
+                  type="button"
+                  disabled={findingJobs || !providerSettings[chatProvider].configured}
+                  onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find jobs for me'}</button
+                >
+              </div>
+              {#if !providerSettings[chatProvider].configured}
+                <p class="status-message" role="status">
+                  Add an API key for this provider in API settings first.
+                </p>
+              {/if}
+              <div class="chat-log" aria-live="polite">
+                {#each chatMessages as message, index (index)}
+                  <div class={`chat-message chat-${message.role}`}>
+                    <strong>{message.role === 'user' ? 'You' : 'Recruiter'}</strong>
+                    <p>{message.content}</p>
+                  </div>
+                {/each}
+                {#if chatBusy}<p class="status-message">The recruiter is typing…</p>{/if}
+              </div>
+              {#if discoveredSkills.length}
+                <div class="skill-suggestions">
+                  <strong>Skills the recruiter spotted — add to your profile?</strong>
+                  {#each discoveredSkills as skill (skill)}
+                    <button
+                      class="job-action-link"
+                      type="button"
+                      onclick={() => addDiscoveredSkill(skill)}>+ {skill}</button
+                    >
+                    <button
+                      class="job-remove skill-dismiss"
+                      type="button"
+                      aria-label={`Dismiss ${skill}`}
+                      onclick={() => dismissDiscoveredSkill(skill)}>Not now</button
+                    >
+                  {/each}
+                  <span class="field-hint">These suggestions stay unsaved until you add one.</span>
+                </div>
+              {/if}
+              {#if alertSuggestions.length}
+                <div class="skill-suggestions alert-suggestions">
+                  <strong>LinkedIn job alerts worth activating</strong>
+                  <p>
+                    Use one alert per focused search. LinkedIn controls the alert; JobFinder does
+                    not access your account.
+                  </p>
+                  {#each alertSuggestions as suggestion (suggestion)}
+                    <a
+                      class="job-action-link"
+                      href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(suggestion)}&f_TPR=r604800`}
+                      target="_blank"
+                      rel="noopener noreferrer">Create alert: {suggestion} ↗</a
+                    >
+                  {/each}
+                </div>
+              {/if}
+              <form class="chat-form" onsubmit={sendChatMessage}>
+                <label class="sr-only" for="chat-input">Your message</label>
+                <textarea
+                  id="chat-input"
+                  rows="3"
+                  maxlength="3000"
+                  placeholder="Describe a project you worked on, your role and the tools you used…"
+                  bind:value={chatInput}
+                ></textarea>
+                <div class="provider-actions">
+                  <span class="status-message" role="status">{chatStatus || suggestionsStatus}</span
+                  >
+                  {#if chatStatus}
+                    <button
+                      class="text-button"
+                      type="button"
+                      disabled={chatBusy || !providerSettings[chatProvider].configured}
+                      onclick={() => void requestRecruiterReply()}>Try again</button
+                    >
+                  {/if}
+                  <button
+                    class="button button-dark"
+                    type="submit"
+                    disabled={chatBusy ||
+                      !chatMessages.length ||
+                      !providerSettings[chatProvider].configured}>Send</button
+                  >
+                </div>
+              </form>
+            </article>
+          </section>
+        {/if}
+
+        {#if view === 'linkedin-alerts'}
+          <section class="view" id="view-linkedin-alerts">
+            <div class="inner-heading">
+              <p class="eyebrow">YOUR LINKEDIN INBOX, ON YOUR TERMS</p>
+              <h1>Bring alerts in,<br /><em>without scraping.</em></h1>
+              <p class="heading-copy">
+                Paste a LinkedIn job-alert email or load a local .eml/text export. The selected
+                provider extracts leads from only what you submit; the email is not retained by the
+                server.
+              </p>
+            </div>
+            <div class="form-note">
+              <span aria-hidden="true">✳</span>
+              <div>
+                <strong>Only permitted sources are checked.</strong> JobFinder can check the extracted
+                title, company, and location against Jobicy and any configured Adzuna or Jooble APIs.
+                It never signs in to LinkedIn, scrapes LinkedIn, or automatically crawls company sites.
+              </div>
+            </div>
+            <article class="panel alert-import-card">
+              <label
+                class="upload-control drop-zone"
+                class:is-dragging={draggingAlertFile}
+                for="linkedin-alert-file"
+                ondragover={(event) => {
+                  event.preventDefault();
+                  draggingAlertFile = true;
+                }}
+                ondragleave={(event) => {
+                  if (event.currentTarget === event.target) draggingAlertFile = false;
+                }}
+                ondrop={handleLinkedinAlertDrop}
+                ><span class="upload-symbol" aria-hidden="true">↑</span><span
+                  ><strong>Choose an alert email file</strong><small
+                    >Drop an .eml or .txt file here, or click to choose — lead extraction starts
+                    automatically</small
+                  ></span
+                ><input
+                  id="linkedin-alert-file"
+                  type="file"
+                  accept=".eml,.txt,message/rfc822,text/plain"
+                  onchange={handleLinkedinAlertFile}
+                /></label
+              >
               <label class="field"
-                ><span>AI provider</span><select
-                  value={chatProvider}
-                  disabled={chatBusy}
-                  onchange={changeChatProvider}
-                  >{#each providers as provider (provider)}<option value={provider}
-                      >{providerNames[provider]}{providerSettings[provider].configured
-                        ? ''
-                        : ' (no key)'}</option
-                    >{/each}</select
-                ></label
+                ><span>LinkedIn job-alert email text</span><textarea
+                  rows="12"
+                  maxlength="20000"
+                  bind:value={linkedinAlertText}
+                  placeholder="Paste the job-alert email here. Remove anything you do not want the AI provider to read."
+                ></textarea></label
               >
-              <button
-                class="button button-dark"
-                type="button"
-                disabled={chatBusy || !providerSettings[chatProvider].configured}
-                onclick={restartChat}
-                >{chatMessages.length ? 'Restart interview' : 'Start interview'}</button
-              >
-              <button
-                class="text-button chat-clear"
-                type="button"
-                disabled={chatBusy ||
-                  (!chatMessages.length && !discoveredSkills.length && !alertSuggestions.length)}
-                onclick={clearRecruiterConversation}>Clear chat</button
-              >
+              <div class="provider-actions">
+                <span class="status-message" role="status">{linkedinAlertStatus}</span><button
+                  class="button button-dark"
+                  type="button"
+                  disabled={importingLinkedinAlert ||
+                    !linkedinAlertText.trim() ||
+                    !providerSettings[chatProvider].configured}
+                  onclick={() => void importLinkedinAlert()}
+                  >{importingLinkedinAlert ? 'Importing…' : 'Import leads'}</button
+                >
+              </div>
+            </article>
+          </section>
+        {/if}
+
+        {#if view === 'suggestions'}
+          <section class="view" id="view-suggestions">
+            <div class="inner-heading">
+              <p class="eyebrow">HANDPICKED FOR YOU</p>
+              <h1>Recommended <em>jobs.</em></h1>
+              <p class="heading-copy">
+                Postings found on public job boards and ranked against your profile. Review them,
+                save the ones you like, and apply later. Leads imported from an alert email are
+                labeled as not evaluated rather than assigned a match percentage.
+              </p>
+            </div>
+            <div class="provider-actions">
+              <span class="status-message" role="status">{suggestionsStatus}</span>
               <button
                 class="button button-dark"
                 type="button"
                 disabled={findingJobs || !providerSettings[chatProvider].configured}
-                onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find jobs for me'}</button
+                onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find more jobs'}</button
               >
             </div>
-            {#if !providerSettings[chatProvider].configured}
-              <p class="status-message" role="status">
-                Add an API key for this provider in API settings first.
-              </p>
-            {/if}
-            <div class="chat-log" aria-live="polite">
-              {#each chatMessages as message, index (index)}
-                <div class={`chat-message chat-${message.role}`}>
-                  <strong>{message.role === 'user' ? 'You' : 'Recruiter'}</strong>
-                  <p>{message.content}</p>
+            <div class="recommendation-controls" aria-label="Recommendation controls">
+              <label class="field"
+                ><span>Order by</span><select
+                  bind:value={suggestionSort}
+                  onchange={resetSuggestionPage}
+                  ><option value="match">Best match</option><option value="date">Most recent</option
+                  ></select
+                ></label
+              >
+              <label class="field"
+                ><span>Place</span><select
+                  bind:value={suggestionLocation}
+                  onchange={resetSuggestionPage}
+                  ><option value="">All places</option
+                  >{#each suggestionLocations as location (location)}
+                    <option value={location}>{location}</option>
+                  {/each}</select
+                ></label
+              >
+              <span class="field-hint"
+                >{sortedSuggestions.length} of {suggestions.length} recommendation{suggestions.length ===
+                1
+                  ? ''
+                  : 's'}</span
+              >
+            </div>
+            <div class="job-list">
+              {#if suggestions.length === 0}
+                <div class="empty-state">
+                  <span class="empty-mark">✳</span>
+                  <h3>No recommendations yet.</h3>
+                  <p>Ask the AI recruiter to find jobs for you.</p>
                 </div>
-              {/each}
-              {#if chatBusy}<p class="status-message">The recruiter is typing…</p>{/if}
-            </div>
-            {#if discoveredSkills.length}
-              <div class="skill-suggestions">
-                <strong>Skills the recruiter spotted — add to your profile?</strong>
-                {#each discoveredSkills as skill (skill)}
-                  <button
-                    class="job-action-link"
-                    type="button"
-                    onclick={() => addDiscoveredSkill(skill)}>+ {skill}</button
-                  >
-                  <button
-                    class="job-remove skill-dismiss"
-                    type="button"
-                    aria-label={`Dismiss ${skill}`}
-                    onclick={() => dismissDiscoveredSkill(skill)}>Not now</button
-                  >
-                {/each}
-                <span class="field-hint">These suggestions stay unsaved until you add one.</span>
-              </div>
-            {/if}
-            {#if alertSuggestions.length}
-              <div class="skill-suggestions alert-suggestions">
-                <strong>LinkedIn job alerts worth activating</strong>
-                <p>
-                  Use one alert per focused search. LinkedIn controls the alert; JobFinder does not
-                  access your account.
-                </p>
-                {#each alertSuggestions as suggestion (suggestion)}
-                  <a
-                    class="job-action-link"
-                    href={`https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(suggestion)}&f_TPR=r604800`}
-                    target="_blank"
-                    rel="noopener noreferrer">Create alert: {suggestion} ↗</a
-                  >
-                {/each}
-              </div>
-            {/if}
-            <form class="chat-form" onsubmit={sendChatMessage}>
-              <label class="sr-only" for="chat-input">Your message</label>
-              <textarea
-                id="chat-input"
-                rows="3"
-                maxlength="3000"
-                placeholder="Describe a project you worked on, your role and the tools you used…"
-                bind:value={chatInput}
-              ></textarea>
-              <div class="provider-actions">
-                <span class="status-message" role="status">{chatStatus || suggestionsStatus}</span>
-                {#if chatStatus}
-                  <button
-                    class="text-button"
-                    type="button"
-                    disabled={chatBusy || !providerSettings[chatProvider].configured}
-                    onclick={() => void requestRecruiterReply()}>Try again</button
-                  >
-                {/if}
-                <button
-                  class="button button-dark"
-                  type="submit"
-                  disabled={chatBusy ||
-                    !chatMessages.length ||
-                    !providerSettings[chatProvider].configured}>Send</button
-                >
-              </div>
-            </form>
-          </article>
-        </section>
-      {/if}
-
-      {#if view === 'linkedin-alerts'}
-        <section class="view" id="view-linkedin-alerts">
-          <div class="inner-heading">
-            <p class="eyebrow">YOUR LINKEDIN INBOX, ON YOUR TERMS</p>
-            <h1>Bring alerts in,<br /><em>without scraping.</em></h1>
-            <p class="heading-copy">
-              Paste a LinkedIn job-alert email or load a local .eml/text export. The selected
-              provider extracts leads from only what you submit; the email is not retained by the
-              server.
-            </p>
-          </div>
-          <div class="form-note">
-            <span aria-hidden="true">✳</span>
-            <div>
-              <strong>Only permitted sources are checked.</strong> JobFinder can check the extracted title,
-              company, and location against Jobicy and any configured Adzuna or Jooble APIs. It never
-              signs in to LinkedIn, scrapes LinkedIn, or automatically crawls company sites.
-            </div>
-          </div>
-          <article class="panel alert-import-card">
-            <label
-              class="upload-control drop-zone"
-              class:is-dragging={draggingAlertFile}
-              for="linkedin-alert-file"
-              ondragover={(event) => {
-                event.preventDefault();
-                draggingAlertFile = true;
-              }}
-              ondragleave={(event) => {
-                if (event.currentTarget === event.target) draggingAlertFile = false;
-              }}
-              ondrop={handleLinkedinAlertDrop}
-              ><span class="upload-symbol" aria-hidden="true">↑</span><span
-                ><strong>Choose an alert email file</strong><small
-                  >Drop an .eml or .txt file here, or click to choose — lead extraction starts
-                  automatically</small
-                ></span
-              ><input
-                id="linkedin-alert-file"
-                type="file"
-                accept=".eml,.txt,message/rfc822,text/plain"
-                onchange={handleLinkedinAlertFile}
-              /></label
-            >
-            <label class="field"
-              ><span>LinkedIn job-alert email text</span><textarea
-                rows="12"
-                maxlength="20000"
-                bind:value={linkedinAlertText}
-                placeholder="Paste the job-alert email here. Remove anything you do not want the AI provider to read."
-              ></textarea></label
-            >
-            <div class="provider-actions">
-              <span class="status-message" role="status">{linkedinAlertStatus}</span><button
-                class="button button-dark"
-                type="button"
-                disabled={importingLinkedinAlert ||
-                  !linkedinAlertText.trim() ||
-                  !providerSettings[chatProvider].configured}
-                onclick={() => void importLinkedinAlert()}
-                >{importingLinkedinAlert ? 'Importing…' : 'Import leads'}</button
-              >
-            </div>
-          </article>
-        </section>
-      {/if}
-
-      {#if view === 'suggestions'}
-        <section class="view" id="view-suggestions">
-          <div class="inner-heading">
-            <p class="eyebrow">HANDPICKED FOR YOU</p>
-            <h1>Recommended <em>jobs.</em></h1>
-            <p class="heading-copy">
-              Postings found on public job boards and ranked against your profile. Review them, save
-              the ones you like, and apply later. Leads imported from an alert email are labeled as
-              not evaluated rather than assigned a match percentage.
-            </p>
-          </div>
-          <div class="provider-actions">
-            <span class="status-message" role="status">{suggestionsStatus}</span>
-            <button
-              class="button button-dark"
-              type="button"
-              disabled={findingJobs || !providerSettings[chatProvider].configured}
-              onclick={findJobs}>{findingJobs ? 'Searching…' : 'Find more jobs'}</button
-            >
-          </div>
-          <div class="recommendation-controls" aria-label="Recommendation controls">
-            <label class="field"
-              ><span>Order by</span><select
-                bind:value={suggestionSort}
-                onchange={resetSuggestionPage}
-                ><option value="match">Best match</option><option value="date">Most recent</option
-                ></select
-              ></label
-            >
-            <label class="field"
-              ><span>Place</span><select
-                bind:value={suggestionLocation}
-                onchange={resetSuggestionPage}
-                ><option value="">All places</option
-                >{#each suggestionLocations as location (location)}
-                  <option value={location}>{location}</option>
-                {/each}</select
-              ></label
-            >
-            <span class="field-hint"
-              >{sortedSuggestions.length} of {suggestions.length} recommendation{suggestions.length ===
-              1
-                ? ''
-                : 's'}</span
-            >
-          </div>
-          <div class="job-list">
-            {#if suggestions.length === 0}
-              <div class="empty-state">
-                <span class="empty-mark">✳</span>
-                <h3>No recommendations yet.</h3>
-                <p>Ask the AI recruiter to find jobs for you.</p>
-              </div>
-            {/if}
-            {#each visibleSuggestions as suggestion (suggestion.id)}
-              <article class="job-card">
-                <div class="job-card-top">
-                  <div class="job-company">
-                    <span class="company-mark"
-                      >{(suggestion.company || '?').trim().slice(0, 1).toUpperCase()}</span
-                    >
-                    <div>
-                      {#if suggestion.source === 'LinkedIn alert email' && linkFor(suggestion.url)}
-                        <h3>
+              {/if}
+              {#each visibleSuggestions as suggestion (suggestion.id)}
+                <article class="job-card">
+                  <div class="job-card-top">
+                    <div class="job-company">
+                      <span class="company-mark"
+                        >{(suggestion.company || '?').trim().slice(0, 1).toUpperCase()}</span
+                      >
+                      <div>
+                        {#if suggestion.source === 'LinkedIn alert email' && linkFor(suggestion.url)}
+                          <h3>
+                            <a
+                              class="job-title-link"
+                              href={linkFor(suggestion.url)}
+                              target="_blank"
+                              rel="noopener noreferrer">{suggestion.title}</a
+                            >
+                          </h3>
+                        {:else}
+                          <h3>{suggestion.title}</h3>
+                        {/if}
+                        <p>{suggestion.company} · {suggestion.location} · {suggestion.source}</p>
+                        {#if suggestion.postedAt}
+                          <p>Posted {new Date(suggestion.postedAt).toLocaleDateString()}</p>
+                        {/if}
+                        {#if suggestion.source.startsWith('Adzuna')}
                           <a
-                            class="job-title-link"
-                            href={linkFor(suggestion.url)}
+                            class="source-attribution adzuna-attribution"
+                            href="https://www.adzuna.com"
                             target="_blank"
-                            rel="noopener noreferrer">{suggestion.title}</a
+                            rel="noopener noreferrer">Adzuna</a
                           >
-                        </h3>
-                      {:else}
-                        <h3>{suggestion.title}</h3>
-                      {/if}
-                      <p>{suggestion.company} · {suggestion.location} · {suggestion.source}</p>
-                      {#if suggestion.postedAt}
-                        <p>Posted {new Date(suggestion.postedAt).toLocaleDateString()}</p>
-                      {/if}
-                      {#if suggestion.source.startsWith('Adzuna')}
-                        <a
-                          class="source-attribution adzuna-attribution"
-                          href="https://www.adzuna.com"
-                          target="_blank"
-                          rel="noopener noreferrer">Adzuna</a
-                        >
-                      {:else if suggestion.source.startsWith('Jobicy')}
-                        <a
-                          class="source-attribution"
-                          href="https://jobicy.com"
-                          target="_blank"
-                          rel="noopener noreferrer">Source: Jobicy</a
-                        >
-                      {:else if suggestion.source.startsWith('Jooble')}
-                        <a
-                          class="source-attribution"
-                          href="https://jooble.org"
-                          target="_blank"
-                          rel="noopener noreferrer">Source: Jooble</a
-                        >
-                      {/if}
+                        {:else if suggestion.source.startsWith('Jobicy')}
+                          <a
+                            class="source-attribution"
+                            href="https://jobicy.com"
+                            target="_blank"
+                            rel="noopener noreferrer">Source: Jobicy</a
+                          >
+                        {:else if suggestion.source.startsWith('Jooble')}
+                          <a
+                            class="source-attribution"
+                            href="https://jooble.org"
+                            target="_blank"
+                            rel="noopener noreferrer">Source: Jooble</a
+                          >
+                        {/if}
+                      </div>
+                    </div>
+                    {#if suggestion.matchEvaluated === false}
+                      <span class="match-unscored">{suggestionScoreLabel(suggestion)}</span>
+                    {:else}
+                      <span
+                        class:match-high={scoreClass(suggestion.score ?? 0) === 'match-high'}
+                        class:match-medium={scoreClass(suggestion.score ?? 0) === 'match-medium'}
+                        class:match-low={scoreClass(suggestion.score ?? 0) === 'match-low'}
+                        class="match-score">{suggestionScoreLabel(suggestion)}</span
+                      >
+                    {/if}
+                  </div>
+                  {#if suggestion.reason}<p class="job-notes">{suggestion.reason}</p>{/if}
+                  <div class="job-card-footer">
+                    {#if linkFor(suggestion.url)}
+                      <a
+                        class="job-action-link"
+                        href={linkFor(suggestion.url)}
+                        target="_blank"
+                        rel="noopener noreferrer">View listing ↗</a
+                      >
+                    {/if}
+                    {#if suggestion.originalUrl && linkFor(suggestion.originalUrl)}
+                      <a
+                        class="job-action-link"
+                        href={linkFor(suggestion.originalUrl)}
+                        target="_blank"
+                        rel="noopener noreferrer">Open original alert listing ↗</a
+                      >
+                    {/if}
+                    {#if suggestion.companySearchUrl && linkFor(suggestion.companySearchUrl)}
+                      <a
+                        class="job-action-link"
+                        href={linkFor(suggestion.companySearchUrl)}
+                        target="_blank"
+                        rel="noopener noreferrer">Search company careers ↗</a
+                      >
+                    {/if}
+                    <button
+                      class="job-action-link"
+                      type="button"
+                      onclick={() => saveSuggestion(suggestion)}>Save to my jobs</button
+                    >
+                    <button
+                      class="job-remove"
+                      type="button"
+                      onclick={() => hideSuggestion(suggestion)}>Hide this job</button
+                    >
+                  </div>
+                </article>
+              {/each}
+            </div>
+            {#if suggestions.length > suggestionsPerPage}
+              <nav class="pagination" aria-label="Recommended jobs pages">
+                <button
+                  class="text-button"
+                  type="button"
+                  disabled={suggestionPage === 1}
+                  onclick={() => (suggestionPage -= 1)}>Previous</button
+                >
+                <span>Page {suggestionPage} of {suggestionPageCount}</span>
+                <button
+                  class="text-button"
+                  type="button"
+                  disabled={suggestionPage === suggestionPageCount}
+                  onclick={() => (suggestionPage += 1)}>Next</button
+                >
+              </nav>
+            {/if}
+          </section>
+        {/if}
+
+        {#if view === 'settings'}
+          <section class="view" id="view-settings">
+            <div class="inner-heading">
+              <p class="eyebrow">PRIVATE PROVIDER SETUP</p>
+              <h1>Your keys, <em>your control.</em></h1>
+              <p class="heading-copy">
+                Add an AI provider key here once. JobFinder keeps it on the server and encrypts it
+                before saving.
+              </p>
+            </div>
+            <div class="form-note settings-note">
+              <span aria-hidden="true">✳</span>
+              <div>
+                <strong>Encrypted at rest, never sent back to this page.</strong> Keys are encrypted with
+                AES-256-GCM and stored in a private local data folder. They are decrypted only by the
+                server when an AI request needs them. Anyone with access to this server account can access
+                its files and use the app.
+              </div>
+            </div>
+            {#if settingsStorageWarning}
+              <div
+                class="form-note settings-note settings-error"
+                id="settings-storage-warning"
+                role="alert"
+              >
+                <span aria-hidden="true">!</span>
+                <div>
+                  <strong>Saved key storage needs attention.</strong>
+                  <span id="settings-storage-message">{settingsStorageMessage}</span>
+                </div>
+              </div>
+            {/if}
+            <div class="settings-provider-list">
+              {#each providers as provider (provider)}
+                <article class="panel provider-card" data-provider-card={provider}>
+                  <div class="provider-heading">
+                    <div class:gemini-symbol={provider === 'gemini'} class="provider-symbol">
+                      {provider === 'openai' ? 'O' : provider === 'gemini' ? 'G' : 'A'}
+                    </div>
+                    <div>
+                      <h2>{providerNames[provider]}</h2>
+                      <p class="provider-state" id={`provider-state-${provider}`}>
+                        {providerStatuses[provider] ||
+                          (providerSettings[provider].source === 'saved'
+                            ? 'A key is already saved for this provider. Remove it to add a different one.'
+                            : providerSettings[provider].configured === false
+                              ? 'No key configured.'
+                              : 'Checking key status…')}
+                      </p>
                     </div>
                   </div>
-                  {#if suggestion.matchEvaluated === false}
-                    <span class="match-unscored">{suggestionScoreLabel(suggestion)}</span>
-                  {:else}
-                    <span
-                      class:match-high={scoreClass(suggestion.score ?? 0) === 'match-high'}
-                      class:match-medium={scoreClass(suggestion.score ?? 0) === 'match-medium'}
-                      class:match-low={scoreClass(suggestion.score ?? 0) === 'match-low'}
-                      class="match-score">{suggestionScoreLabel(suggestion)}</span
-                    >
-                  {/if}
-                </div>
-                {#if suggestion.reason}<p class="job-notes">{suggestion.reason}</p>{/if}
-                <div class="job-card-footer">
-                  {#if linkFor(suggestion.url)}
-                    <a
-                      class="job-action-link"
-                      href={linkFor(suggestion.url)}
-                      target="_blank"
-                      rel="noopener noreferrer">View listing ↗</a
-                    >
-                  {/if}
-                  {#if suggestion.originalUrl && linkFor(suggestion.originalUrl)}
-                    <a
-                      class="job-action-link"
-                      href={linkFor(suggestion.originalUrl)}
-                      target="_blank"
-                      rel="noopener noreferrer">Open original alert listing ↗</a
-                    >
-                  {/if}
-                  {#if suggestion.companySearchUrl && linkFor(suggestion.companySearchUrl)}
-                    <a
-                      class="job-action-link"
-                      href={linkFor(suggestion.companySearchUrl)}
-                      target="_blank"
-                      rel="noopener noreferrer">Search company careers ↗</a
-                    >
-                  {/if}
-                  <button
-                    class="job-action-link"
-                    type="button"
-                    onclick={() => saveSuggestion(suggestion)}>Save to my jobs</button
+                  <form
+                    class="provider-key-form"
+                    data-provider={provider}
+                    onsubmit={(event) => saveProviderKey(provider, event)}
                   >
-                  <button
-                    class="job-remove"
-                    type="button"
-                    onclick={() => hideSuggestion(suggestion)}>Hide this job</button
-                  >
-                </div>
-              </article>
-            {/each}
-          </div>
-          {#if suggestions.length > suggestionsPerPage}
-            <nav class="pagination" aria-label="Recommended jobs pages">
-              <button
-                class="text-button"
-                type="button"
-                disabled={suggestionPage === 1}
-                onclick={() => (suggestionPage -= 1)}>Previous</button
-              >
-              <span>Page {suggestionPage} of {suggestionPageCount}</span>
-              <button
-                class="text-button"
-                type="button"
-                disabled={suggestionPage === suggestionPageCount}
-                onclick={() => (suggestionPage += 1)}>Next</button
-              >
-            </nav>
-          {/if}
-        </section>
-      {/if}
-
-      {#if view === 'settings'}
-        <section class="view" id="view-settings">
-          <div class="inner-heading">
-            <p class="eyebrow">PRIVATE PROVIDER SETUP</p>
-            <h1>Your keys, <em>your control.</em></h1>
-            <p class="heading-copy">
-              Add an AI provider key here once. JobFinder keeps it on the server and encrypts it
-              before saving.
+                    {#if !providerSettings[provider].configured}
+                      <label class="field"
+                        ><span>API key</span><input
+                          type="password"
+                          name="key"
+                          maxlength="1000"
+                          autocomplete="new-password"
+                          autocapitalize="off"
+                          spellcheck="false"
+                          placeholder={`Paste your ${providerNames[provider]} API key`}
+                          bind:value={providerKeys[provider]}
+                        /></label
+                      >
+                    {/if}
+                    <div class="provider-actions">
+                      <span class="status-message" role="status">{providerStatuses[provider]}</span
+                      >{#if !providerSettings[provider].configured}<button
+                          class="button button-dark"
+                          type="submit"
+                          disabled={providerBusy[provider]}>Save key</button
+                        >{/if}{#if providerSettings[provider].source === 'saved'}<button
+                          class="text-button remove-provider-key"
+                          type="button"
+                          disabled={providerBusy[provider]}
+                          onclick={() => removeProviderKey(provider)}>Remove saved key</button
+                        >{/if}
+                    </div>
+                  </form>
+                </article>
+              {/each}
+            </div>
+            <p class="settings-warning">
+              JobFinder has no sign-in or multi-user protection. Keep it on your own computer at <code
+                >127.0.0.1</code
+              >; don’t expose this page on a public network. Your keys are not stored in browser
+              storage.
             </p>
-          </div>
-          <div class="form-note settings-note">
-            <span aria-hidden="true">✳</span>
-            <div>
-              <strong>Encrypted at rest, never sent back to this page.</strong> Keys are encrypted with
-              AES-256-GCM and stored in a private local data folder. They are decrypted only by the server
-              when an AI request needs them. Anyone with access to this server account can access its
-              files and use the app.
-            </div>
-          </div>
-          {#if settingsStorageWarning}
-            <div
-              class="form-note settings-note settings-error"
-              id="settings-storage-warning"
-              role="alert"
-            >
-              <span aria-hidden="true">!</span>
-              <div>
-                <strong>Saved key storage needs attention.</strong>
-                <span id="settings-storage-message">{settingsStorageMessage}</span>
-              </div>
-            </div>
-          {/if}
-          <div class="settings-provider-list">
-            {#each providers as provider (provider)}
-              <article class="panel provider-card" data-provider-card={provider}>
-                <div class="provider-heading">
-                  <div class:gemini-symbol={provider === 'gemini'} class="provider-symbol">
-                    {provider === 'openai' ? 'O' : provider === 'gemini' ? 'G' : 'A'}
-                  </div>
-                  <div>
-                    <h2>{providerNames[provider]}</h2>
-                    <p class="provider-state" id={`provider-state-${provider}`}>
-                      {providerStatuses[provider] ||
-                        (providerSettings[provider].source === 'saved'
-                          ? 'A key is already saved for this provider. Remove it to add a different one.'
-                          : providerSettings[provider].configured === false
-                            ? 'No key configured.'
-                            : 'Checking key status…')}
-                    </p>
-                  </div>
-                </div>
-                <form
-                  class="provider-key-form"
-                  data-provider={provider}
-                  onsubmit={(event) => saveProviderKey(provider, event)}
-                >
-                  {#if !providerSettings[provider].configured}
-                    <label class="field"
-                      ><span>API key</span><input
-                        type="password"
-                        name="key"
-                        maxlength="1000"
-                        autocomplete="new-password"
-                        autocapitalize="off"
-                        spellcheck="false"
-                        placeholder={`Paste your ${providerNames[provider]} API key`}
-                        bind:value={providerKeys[provider]}
-                      /></label
-                    >
-                  {/if}
-                  <div class="provider-actions">
-                    <span class="status-message" role="status">{providerStatuses[provider]}</span
-                    >{#if !providerSettings[provider].configured}<button
-                        class="button button-dark"
-                        type="submit"
-                        disabled={providerBusy[provider]}>Save key</button
-                      >{/if}{#if providerSettings[provider].source === 'saved'}<button
-                        class="text-button remove-provider-key"
-                        type="button"
-                        disabled={providerBusy[provider]}
-                        onclick={() => removeProviderKey(provider)}>Remove saved key</button
-                      >{/if}
-                  </div>
-                </form>
-              </article>
-            {/each}
-          </div>
-          <p class="settings-warning">
-            JobFinder has no sign-in or multi-user protection. Keep it on your own computer at <code
-              >127.0.0.1</code
-            >; don’t expose this page on a public network. Your keys are not stored in browser
-            storage.
-          </p>
-        </section>
-      {/if}
-    </main>
-    <footer class="app-footer">
-      <span>JobFinder</span><span>Find a role that feels like your next chapter.</span>
-    </footer>
+          </section>
+        {/if}
+      </main>
+      <footer class="app-footer">
+        <span>JobFinder</span><span>Find a role that feels like your next chapter.</span>
+      </footer>
+    </div>
   </div>
-</div>
 
-<dialog
-  class="letter-dialog assessment-dialog"
-  bind:this={assessmentDialog}
-  aria-labelledby="assessment-title"
->
-  <form method="dialog" class="dialog-close-form">
-    <button class="dialog-close" aria-label="Close">×</button>
-  </form>
-  <p class="eyebrow">OPPORTUNITY REVIEW</p>
-  <h2 id="assessment-title">Is this a <em>good fit?</em></h2>
-  <p class="dialog-intro">
-    The selected provider compares your profile with this role’s title, company and pasted
-    description, plus up to ten recent recruiter messages. It returns a fit score, pros, cons, and
-    questions to clarify. This is a suggestion based only on that information—not a prediction or a
-    substitute for checking the listing.
-  </p>
-  <label class="field"
-    ><span>AI provider</span><select bind:value={assessmentProvider}
-      >{#each providers as provider (provider)}<option
-          value={provider}
-          disabled={!providerSettings[provider].configured}
-          >{providerNames[provider]}{providerSettings[provider].configured
-            ? ''
-            : ' (no key)'}</option
-        >{/each}</select
-    ></label
+  <dialog
+    class="letter-dialog assessment-dialog"
+    bind:this={assessmentDialog}
+    aria-labelledby="assessment-title"
   >
-  <div class="dialog-actions">
-    <span class="status-message" role="status">{assessmentStatus}</span><button
-      class="button button-dark"
-      type="button"
-      disabled={assessingJob || !providerSettings[assessmentProvider].configured}
-      onclick={assessJob}>{assessingJob ? 'Assessing…' : 'Rate this role ✳'}</button
+    <form method="dialog" class="dialog-close-form">
+      <button class="dialog-close" aria-label="Close">×</button>
+    </form>
+    <p class="eyebrow">OPPORTUNITY REVIEW</p>
+    <h2 id="assessment-title">Is this a <em>good fit?</em></h2>
+    <p class="dialog-intro">
+      The selected provider compares your profile with this role’s title, company and pasted
+      description, plus up to ten recent recruiter messages. It returns a fit score, pros, cons, and
+      questions to clarify. This is a suggestion based only on that information—not a prediction or
+      a substitute for checking the listing.
+    </p>
+    <label class="field"
+      ><span>AI provider</span><select bind:value={assessmentProvider}
+        >{#each providers as provider (provider)}<option
+            value={provider}
+            disabled={!providerSettings[provider].configured}
+            >{providerNames[provider]}{providerSettings[provider].configured
+              ? ''
+              : ' (no key)'}</option
+          >{/each}</select
+      ></label
     >
-  </div>
-</dialog>
+    <div class="dialog-actions">
+      <span class="status-message" role="status">{assessmentStatus}</span><button
+        class="button button-dark"
+        type="button"
+        disabled={assessingJob || !providerSettings[assessmentProvider].configured}
+        onclick={assessJob}>{assessingJob ? 'Assessing…' : 'Rate this role ✳'}</button
+      >
+    </div>
+  </dialog>
+{/if}

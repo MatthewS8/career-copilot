@@ -3,10 +3,12 @@ import * as fsPromises from 'node:fs/promises';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { createAuthStore, type AuthStore, type AuthUser } from './auth';
 
 const rootDirectory = path.resolve(__dirname, '..');
 const buildDirectory = path.join(rootDirectory, 'dist');
-const maxRequestBytes = 150_000;
+const maxRequestBytes = 2_000_000;
+const sessionCookieName = 'jobfinder_session';
 type Provider = 'openai' | 'gemini' | 'anthropic';
 type StoredKeys = Partial<Record<Provider, string>>;
 type ApiError = Error & { code?: string; status?: number };
@@ -41,6 +43,15 @@ type Profile = {
 type ProfileStore = {
   get(): Promise<Profile>;
   save(profile: Profile): Promise<void>;
+};
+type WorkspaceStore = {
+  get(): Promise<Record<string, unknown> | null>;
+  save(workspace: Record<string, unknown>): Promise<void>;
+};
+type UserStores = {
+  keyStore: ProviderKeyStore;
+  profileStore: ProfileStore;
+  workspaceStore: WorkspaceStore;
 };
 type ProviderResponse = {
   choices?: { message?: { content?: unknown } }[];
@@ -148,6 +159,7 @@ function send(
   status: number,
   contentType: string,
   body: string | Buffer,
+  extraHeaders: Record<string, string> = {},
 ): void {
   response.writeHead(status, {
     'Content-Type': contentType,
@@ -157,12 +169,18 @@ function send(
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
+    ...extraHeaders,
   });
   response.end(body);
 }
 
-function sendJson(response: http.ServerResponse, status: number, data: unknown): void {
-  send(response, status, 'application/json; charset=utf-8', JSON.stringify(data));
+function sendJson(
+  response: http.ServerResponse,
+  status: number,
+  data: unknown,
+  extraHeaders: Record<string, string> = {},
+): void {
+  send(response, status, 'application/json; charset=utf-8', JSON.stringify(data), extraHeaders);
 }
 
 function readJson(request: http.IncomingMessage): Promise<unknown> {
@@ -523,10 +541,90 @@ function createProfileStore(dataDirectory: string): ProfileStore {
   };
 }
 
+function createWorkspaceStore(dataDirectory: string): WorkspaceStore {
+  const workspacePath = path.join(dataDirectory, 'workspace.json');
+  let writeQueue = Promise.resolve();
+  return {
+    async get() {
+      try {
+        const value: unknown = JSON.parse(await fsPromises.readFile(workspacePath, 'utf8'));
+        return value && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : null;
+      } catch (error) {
+        if (error instanceof Error && (error as ApiError).code === 'ENOENT') return null;
+        throw error;
+      }
+    },
+    async save(workspace) {
+      const operation = writeQueue.then(async () => {
+        await fsPromises.mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+        await fsPromises.chmod(dataDirectory, 0o700);
+        const temporaryPath = path.join(
+          dataDirectory,
+          `.workspace-${crypto.randomBytes(8).toString('hex')}.tmp`,
+        );
+        try {
+          await fsPromises.writeFile(temporaryPath, JSON.stringify(workspace), { mode: 0o600 });
+          await fsPromises.rename(temporaryPath, workspacePath);
+          await fsPromises.chmod(workspacePath, 0o600);
+        } finally {
+          await fsPromises.rm(temporaryPath, { force: true }).catch(() => {});
+        }
+      });
+      writeQueue = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      await operation;
+    },
+  };
+}
+
+async function handleWorkspace(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  workspaceStore: WorkspaceStore,
+): Promise<void> {
+  if (request.method === 'GET') {
+    try {
+      sendJson(response, 200, { workspace: await workspaceStore.get() });
+    } catch {
+      sendJson(response, 500, { error: 'Could not read the saved workspace.' });
+    }
+    return;
+  }
+  if (request.method !== 'PUT') {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return;
+  }
+  if (!isSameOrigin(request)) {
+    sendJson(response, 403, { error: 'Workspace changes must come from this JobFinder page.' });
+    return;
+  }
+  const data = await readRequestData(request, response);
+  if (!data) return;
+  if (!data.workspace || typeof data.workspace !== 'object' || Array.isArray(data.workspace)) {
+    sendJson(response, 400, { error: 'Send a valid workspace.' });
+    return;
+  }
+  try {
+    await workspaceStore.save(data.workspace as Record<string, unknown>);
+    sendJson(response, 200, { saved: true });
+  } catch {
+    sendJson(response, 500, { error: 'Could not save the workspace.' });
+  }
+}
+
 function isSameOrigin(request: http.IncomingMessage): boolean {
   const origin = request.headers.origin;
   const host = request.headers.host;
-  if (!host || !hasLoopbackHost(request)) return false;
+  const configuredPublicUrl = publicUrl();
+  if (!host) return false;
+  if (configuredPublicUrl) {
+    return origin === configuredPublicUrl.origin && host === configuredPublicUrl.host;
+  }
+  if (!hasLoopbackHost(request)) return false;
   if (!origin) return request.headers['sec-fetch-site'] === 'same-origin';
   try {
     const parsedOrigin = new URL(origin);
@@ -549,6 +647,120 @@ function hasLoopbackHost(request: http.IncomingMessage): boolean {
   } catch {
     return false;
   }
+}
+
+function hasAllowedHost(request: http.IncomingMessage): boolean {
+  const configuredPublicUrl = publicUrl();
+  return configuredPublicUrl
+    ? request.headers.host === configuredPublicUrl.host
+    : hasLoopbackHost(request);
+}
+
+function cookieValue(request: http.IncomingMessage, name: string): string | null {
+  const cookie = request.headers.cookie || '';
+  for (const part of cookie.split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name && value.length) return value.join('=');
+  }
+  return null;
+}
+
+function publicUrl(): URL | null {
+  const configured = process.env.JOBFINDER_PUBLIC_URL?.trim();
+  if (!configured) return null;
+  try {
+    const url = new URL(configured);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/'
+    )
+      return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function sessionCookie(token: string, clear = false): string {
+  const secure = publicUrl()?.protocol === 'https:' ? '; Secure' : '';
+  const maxAge = clear ? 0 : 30 * 24 * 60 * 60;
+  return `${sessionCookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge.toString()}${secure}`;
+}
+
+async function adoptLegacyServerData(dataDirectory: string, userId: string): Promise<void> {
+  const userDirectory = path.join(dataDirectory, 'users', userId);
+  await fsPromises.mkdir(userDirectory, { recursive: true, mode: 0o700 });
+  for (const name of ['profile.json', 'key-encryption.key', 'provider-keys.enc']) {
+    const source = path.join(dataDirectory, name);
+    const destination = path.join(userDirectory, name);
+    try {
+      await fsPromises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
+      await fsPromises.chmod(destination, 0o600);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        ((error as ApiError).code !== 'ENOENT' && (error as ApiError).code !== 'EEXIST')
+      )
+        throw error;
+    }
+  }
+}
+
+async function handleAuth(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  pathname: string,
+  authStore: AuthStore,
+  dataDirectory: string,
+): Promise<boolean> {
+  if (!pathname.startsWith('/api/auth/')) return false;
+  const token = cookieValue(request, sessionCookieName);
+  const user = token ? await authStore.getSession(token) : null;
+  if (pathname === '/api/auth/status' && request.method === 'GET') {
+    sendJson(response, 200, { setupRequired: !(await authStore.hasUsers()), user });
+    return true;
+  }
+  if (pathname === '/api/auth/logout' && request.method === 'POST') {
+    if (token) await authStore.removeSession(token);
+    sendJson(response, 200, { loggedOut: true }, { 'Set-Cookie': sessionCookie('', true) });
+    return true;
+  }
+  if (pathname !== '/api/auth/register' && pathname !== '/api/auth/login') {
+    sendJson(response, 404, { error: 'Not found.' });
+    return true;
+  }
+  if (request.method !== 'POST') {
+    sendJson(response, 405, { error: 'Method not allowed.' });
+    return true;
+  }
+  if (!isSameOrigin(request)) {
+    sendJson(response, 403, { error: 'Account changes must come from this JobFinder page.' });
+    return true;
+  }
+  const data = await readRequestData(request, response);
+  if (!data) return true;
+  try {
+    let signedIn: AuthUser | null;
+    if (pathname === '/api/auth/register') {
+      signedIn = await authStore.register(text(data.username, 80), text(data.password, 1_000));
+      await adoptLegacyServerData(dataDirectory, signedIn.id);
+    } else {
+      signedIn = await authStore.login(text(data.username, 80), text(data.password, 1_000));
+      if (!signedIn) {
+        sendJson(response, 401, { error: 'Invalid username or password.' });
+        return true;
+      }
+    }
+    const session = await authStore.createSession(signedIn.id);
+    sendJson(response, 200, { user: signedIn }, { 'Set-Cookie': sessionCookie(session) });
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error instanceof Error ? error.message : 'Could not create the account.',
+    });
+  }
+  return true;
 }
 
 async function handleSettings(
@@ -1801,13 +2013,22 @@ async function handleFindJobs(
   }
 }
 
-function createServer(options: { dataDirectory?: string } = {}): http.Server {
+function createServer(
+  options: { dataDirectory?: string; authDisabled?: boolean } = {},
+): http.Server {
   const dataDirectory =
     options.dataDirectory || process.env.JOBFINDER_DATA_DIR || path.join(rootDirectory, '.data');
-  const keyStore = createProviderKeyStore(dataDirectory);
-  const profileStore = createProfileStore(dataDirectory);
+  const authStore = createAuthStore(dataDirectory);
+  const userStores = new Map<string, UserStores>();
   return http.createServer((request, response) => {
-    void handleRequest(request, response, keyStore, profileStore).catch((error: unknown) => {
+    void handleRequest(
+      request,
+      response,
+      dataDirectory,
+      authStore,
+      userStores,
+      options.authDisabled === true,
+    ).catch((error: unknown) => {
       console.error(`Request failed (${errorName(error)})`);
       if (response.headersSent) {
         response.destroy();
@@ -1821,8 +2042,10 @@ function createServer(options: { dataDirectory?: string } = {}): http.Server {
 async function handleRequest(
   request: http.IncomingMessage,
   response: http.ServerResponse,
-  keyStore: ProviderKeyStore,
-  profileStore: ProfileStore,
+  dataDirectory: string,
+  authStore: AuthStore,
+  userStores: Map<string, UserStores>,
+  authDisabled: boolean,
 ): Promise<void> {
   let url;
   try {
@@ -1832,9 +2055,52 @@ async function handleRequest(
     return;
   }
   const pathname = url.pathname;
+  const configuredPublicUrl = publicUrl();
 
-  if (pathname.startsWith('/api/') && !hasLoopbackHost(request)) {
-    sendJson(response, 403, { error: 'JobFinder API access is limited to localhost.' });
+  if (configuredPublicUrl && request.headers.host !== configuredPublicUrl.host) {
+    if (['GET', 'HEAD'].includes(request.method || '')) {
+      response.writeHead(308, {
+        Location: new URL(`${url.pathname}${url.search}`, configuredPublicUrl).toString(),
+        'Cache-Control': 'no-store',
+      });
+      response.end();
+    } else {
+      sendJson(response, 421, { error: 'Use the configured JobFinder URL.' });
+    }
+    return;
+  }
+
+  if (pathname.startsWith('/api/') && !hasAllowedHost(request)) {
+    sendJson(response, 403, { error: 'JobFinder API access is limited to the configured origin.' });
+    return;
+  }
+
+  if (await handleAuth(request, response, pathname, authStore, dataDirectory)) return;
+
+  let user: AuthUser | null = null;
+  if (!authDisabled && pathname.startsWith('/api/')) {
+    const token = cookieValue(request, sessionCookieName);
+    user = token ? await authStore.getSession(token) : null;
+    if (!user) {
+      sendJson(response, 401, { error: 'Sign in to continue.' });
+      return;
+    }
+    if (token) response.setHeader('Set-Cookie', sessionCookie(token));
+  }
+  const userDataDirectory = user ? path.join(dataDirectory, 'users', user.id) : dataDirectory;
+  let stores = userStores.get(userDataDirectory);
+  if (!stores) {
+    stores = {
+      keyStore: createProviderKeyStore(userDataDirectory),
+      profileStore: createProfileStore(userDataDirectory),
+      workspaceStore: createWorkspaceStore(userDataDirectory),
+    };
+    userStores.set(userDataDirectory, stores);
+  }
+  const { keyStore, profileStore, workspaceStore } = stores;
+
+  if (pathname === '/api/workspace') {
+    await handleWorkspace(request, response, workspaceStore);
     return;
   }
 

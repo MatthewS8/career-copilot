@@ -213,6 +213,11 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .assessment-question textarea { min-height: 48px; padding: 6px 8px; border: 1px solid #dfe4da; border-radius: 5px; font: inherit; resize: vertical; }
 .assessment-answer-save { justify-self: start; font-size: 9px; }
 .assessment-answer-status { color: #395540; }
+.auth-view { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #f6f7f4; }
+.auth-card { width: min(100%, 440px); padding: 32px; border: 1px solid #e0e3dc; border-radius: 12px; background: #fff; box-shadow: 0 12px 40px rgba(47, 59, 47, .08); }
+.auth-card h1 { margin: 6px 0 12px; font-size: 30px; }
+.auth-card > p { color: var(--muted); line-height: 1.6; }
+.auth-card .profile-form { margin-top: 24px; }
 .job-workspace { margin: 13px 0 0 47px; padding: 11px 12px; border: 1px solid #e6e8e1; border-radius: 7px; background: #fcfcfa; color: #596157; font-size: 10px; line-height: 1.55; }
 .job-workspace > summary { color: var(--green); cursor: pointer; font-weight: 600; }
 .workspace-privacy { margin: 7px 0 11px; color: #777d74; }
