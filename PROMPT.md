@@ -21,7 +21,7 @@ This is a local-first, self-hostable job-search workspace. The production server
 - `test/server.test.ts` contains the Node test suite, including mocked provider and job-source requests.
 - `vite.config.mjs` proxies `/api` requests from Vite to `http://127.0.0.1:3000`, preserves the original Host/Origin for canonical-host enforcement, and explicitly allows `jobs.home.arpa` in development.
 - `README.md` explains setup, privacy, resume import, AI recruiter/recommendations, permitted live-job verification, manual job-offer entry, and the boundary between public job APIs and manual search links.
-- `JOBFINDER_PUBLIC_URL` configures a canonical reverse-proxy URL (currently `http://jobs.home.arpa` for the user's LAN). Vite explicitly permits that development host and preserves the browser's Host/Origin while proxying APIs.
+- `CAREER_COPILOT_PUBLIC_URL` configures a canonical reverse-proxy URL (currently `http://jobs.home.arpa` for the user's LAN). Vite explicitly permits that development host and preserves the browser's Host/Origin while proxying APIs.
 
 ### Existing Features
 
@@ -49,7 +49,7 @@ Do not add LinkedIn or Indeed scraping. Their current terms prohibit unauthorize
 - Supported providers: `openai`, `gemini`, `anthropic`.
 - Optional model overrides: `OPENAI_MODEL`, `GEMINI_MODEL`, `ANTHROPIC_MODEL`.
 - The server loads `.env` without overwriting explicitly supplied server settings. Provider keys are never read from environment variables.
-- `JOBFINDER_DATA_DIR` overrides the default `.data` directory. Keep `key-encryption.key` and `provider-keys.enc` together for backups; losing the encryption key makes saved keys unrecoverable.
+- `CAREER_COPILOT_DATA_DIR` overrides the default `.data` directory. Keep `key-encryption.key` and `provider-keys.enc` together for backups; losing the encryption key makes saved keys unrecoverable.
 - Each account has its own server directory under `.data/users/`, holding its profile, encrypted provider keys, and workspace. Legacy root-level profile/key files are copied—not deleted—when the first account is created. Profile/resume/chat data is sent to the selected AI provider when the user starts an extraction, chat, matching, email-alert import, cover-letter request, application-context chat, or CV-update proposal. A CV-update proposal also includes the user's recruiter messages and saved-job research/tracking; it does not replace the resume until explicitly accepted. Job search requests are made by the server to third-party job-board APIs. Alert verification sends only extracted title, company, and location to the configured verification sources.
 - Provider failures distinguish authentication/access, model, timeout, rate-limit, provider-availability, network, malformed-response, and rejected-request cases without returning provider response content. Server logs record only the operation, provider, HTTP status, error name, and safe category.
 - Avoid logging API keys, resume text, chat content, or full provider/job-board response bodies.

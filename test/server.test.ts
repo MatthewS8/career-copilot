@@ -36,7 +36,7 @@ type ProviderConfiguration = {
 let server: http.Server;
 let baseUrl = '';
 let dataDirectory = '';
-const configuredPublicUrl = process.env.JOBFINDER_PUBLIC_URL;
+const configuredPublicUrl = process.env.CAREER_COPILOT_PUBLIC_URL;
 
 async function responseJson(response: Response): Promise<JsonBody> {
   const parsed: unknown = JSON.parse(await response.text());
@@ -74,7 +74,7 @@ async function configureProvider(provider: 'openai' | 'gemini' | 'anthropic', ke
 }
 
 before(async () => {
-  delete process.env.JOBFINDER_PUBLIC_URL;
+  delete process.env.CAREER_COPILOT_PUBLIC_URL;
   dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'jobfinder-test-'));
   server = createServer({ dataDirectory, authDisabled: true });
   await new Promise<void>((resolve) => server.listen({ port: 0, host: '127.0.0.1' }, resolve));
@@ -84,8 +84,8 @@ before(async () => {
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
   await fs.rm(dataDirectory, { recursive: true, force: true });
-  if (configuredPublicUrl === undefined) delete process.env.JOBFINDER_PUBLIC_URL;
-  else process.env.JOBFINDER_PUBLIC_URL = configuredPublicUrl;
+  if (configuredPublicUrl === undefined) delete process.env.CAREER_COPILOT_PUBLIC_URL;
+  else process.env.CAREER_COPILOT_PUBLIC_URL = configuredPublicUrl;
 });
 
 test('serves the app with security headers', async () => {
@@ -122,6 +122,23 @@ test('serves the app with security headers', async () => {
   const stylesheetPath = html.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
   assert.ok(stylesheetPath);
   assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
+});
+
+test('enforces the configured Career Copilot public URL', async () => {
+  const currentUrl = process.env.CAREER_COPILOT_PUBLIC_URL;
+  try {
+    process.env.CAREER_COPILOT_PUBLIC_URL = baseUrl;
+    const configuredResponse = await fetch(`${baseUrl}/api/profile`, { redirect: 'manual' });
+    assert.equal(configuredResponse.status, 200);
+
+    process.env.CAREER_COPILOT_PUBLIC_URL = 'http://career.example';
+    const redirectedResponse = await fetch(`${baseUrl}/api/profile`, { redirect: 'manual' });
+    assert.equal(redirectedResponse.status, 308);
+    assert.equal(redirectedResponse.headers.get('location'), 'http://career.example/api/profile');
+  } finally {
+    if (currentUrl === undefined) delete process.env.CAREER_COPILOT_PUBLIC_URL;
+    else process.env.CAREER_COPILOT_PUBLIC_URL = currentUrl;
+  }
 });
 
 test('migrates reusable-base provenance and immutable generated versions', () => {

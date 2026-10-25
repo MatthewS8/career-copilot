@@ -668,7 +668,7 @@ function cookieValue(request: http.IncomingMessage, name: string): string | null
 }
 
 function publicUrl(): URL | null {
-  const configured = process.env.JOBFINDER_PUBLIC_URL?.trim();
+  const configured = process.env.CAREER_COPILOT_PUBLIC_URL?.trim();
   if (!configured) return null;
   try {
     const url = new URL(configured);
@@ -2019,7 +2019,9 @@ function createServer(
   options: { dataDirectory?: string; authDisabled?: boolean } = {},
 ): http.Server {
   const dataDirectory =
-    options.dataDirectory || process.env.JOBFINDER_DATA_DIR || path.join(rootDirectory, '.data');
+    options.dataDirectory ||
+    process.env.CAREER_COPILOT_DATA_DIR?.trim() ||
+    path.join(rootDirectory, '.data');
   const authStore = createAuthStore(dataDirectory);
   const userStores = new Map<string, UserStores>();
   return http.createServer((request, response) => {

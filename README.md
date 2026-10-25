@@ -20,7 +20,7 @@ Run `npm run lint` to apply the strict ESLint rules, `npm run check` to type-che
 
 Open **API settings** in the app to enter an OpenAI, Gemini, or Anthropic key. The selected provider powers resume autofill, recruiter chat, job matching, and cover-letter drafts. Keys are stored only on the server, encrypted at rest with AES-256-GCM, and never returned to the browser after saving. The server creates a random encryption key and stores it in `.data/key-encryption.key`; encrypted provider keys are saved in `.data/provider-keys.enc`. The data directory is restricted to the current OS user, and both files use owner-only permissions. Back up both files together if you need to retain saved provider keys. Deleting the encryption key makes saved keys unrecoverable.
 
-AI provider keys are configured only in **API settings**. The server encrypts them at rest; they are never read from environment variables. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. Set `JOBFINDER_DATA_DIR` to choose another private directory for the encryption and encrypted-key files. The environment-variable name remains for backwards compatibility.
+AI provider keys are configured only in **API settings**. The server encrypts them at rest; they are never read from environment variables. Optional model overrides are `OPENAI_MODEL`, `GEMINI_MODEL`, and `ANTHROPIC_MODEL`. Set `CAREER_COPILOT_DATA_DIR` to choose another private directory for the encryption and encrypted-key files.
 
 Optional live-job verification for imported alerts is configured through a local `.env` file. Copy `.env.example` to `.env`, enter your private source credentials, then restart Career Copilot:
 
@@ -38,7 +38,7 @@ Encryption protects the API keys at rest from someone who can read only the encr
 
 On first run, create the owner account. Career Copilot stores a password hash and a persistent session cookie; sessions last 30 days and refresh while the app is used. Profile data, API keys, and saved workspace data are isolated by account on the server.
 
-To put Career Copilot behind Nginx, first create the owner account through your current local URL so existing browser data is uploaded. Then set `JOBFINDER_PUBLIC_URL` to the full canonical URL (for example, `http://jobs.home.arpa`) and restart the server. Requests arriving at another host are redirected to that URL. Configure Nginx to preserve the `Host` header and proxy to Career Copilot on loopback. HTTP is supported for a trusted LAN, but HTTPS is recommended because HTTP session cookies and submitted data can be observed on the network. The environment-variable name remains for backwards compatibility.
+To put Career Copilot behind Nginx, first create the owner account through your current local URL so existing browser data is uploaded. Then set `CAREER_COPILOT_PUBLIC_URL` to the full canonical URL (for example, `http://jobs.home.arpa`) and restart the server. Requests arriving at another host are redirected to that URL. Configure Nginx to preserve the `Host` header and proxy to Career Copilot on loopback. HTTP is supported for a trusted LAN, but HTTPS is recommended because HTTP session cookies and submitted data can be observed on the network.
 
 ## Autofill your profile
 
