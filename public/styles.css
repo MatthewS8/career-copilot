@@ -198,7 +198,16 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
 .job-assessment p { margin: 7px 0 0; }
 .assessment-stale { color: #896414; }
 .assessment-next { color: #395540; }
-.job-assessment details { margin-top: 8px; }
+.assessment-pros-cons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 9px; }
+.assessment-pros, .assessment-cons { padding: 8px; border-radius: 5px; }
+.assessment-pros { background: #edf5eb; }
+.assessment-cons { background: #f8efea; }
+.assessment-pros h4, .assessment-cons h4 { margin: 0; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.assessment-pros h4 { color: #395540; }
+.assessment-cons h4 { color: #874b35; }
+.assessment-pros ul, .assessment-cons ul, .assessment-questions ul { margin: 5px 0 0; padding-left: 15px; }
+.assessment-pros li, .assessment-cons li, .assessment-questions li { margin-top: 3px; }
+.assessment-questions { margin-top: 8px; }
 .job-assessment summary { color: var(--green); cursor: pointer; font-weight: 600; }
 .job-workspace { margin: 13px 0 0 47px; padding: 11px 12px; border: 1px solid #e6e8e1; border-radius: 7px; background: #fcfcfa; color: #596157; font-size: 10px; line-height: 1.55; }
 .job-workspace > summary { color: var(--green); cursor: pointer; font-weight: 600; }
@@ -346,6 +355,7 @@ h1 em, .letter-dialog h2 em { color: var(--green); font-family: Georgia, serif; 
   .text-button { font-size: 10px; }
   .search-panel, .add-prompt { gap: 10px; padding: 15px; }
   .job-workspace, .job-card-footer, .job-notes, .job-assessment, .job-application-studio { margin-left: 0; }
+  .assessment-pros-cons { grid-template-columns: 1fr; }
   .research-link-form { grid-template-columns: 1fr; }
   .panel-icon { width: 33px; height: 33px; }
   .form-grid { grid-template-columns: 1fr; padding-left: 0; }

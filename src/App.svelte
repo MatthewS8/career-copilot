@@ -4,22 +4,15 @@
   import {
     migrateBaseLetters as migrateStoredBaseLetters,
     newApplicationChat as migrateApplicationChat,
+    newJobAssessment as migrateJobAssessment,
     newCoverLetter as migrateCoverLetter,
+    restoreGeneratedLetterVersion as restoreStoredGeneratedLetterVersion,
+    type JobAssessment,
   } from './job-storage';
 
   type Provider = 'openai' | 'gemini' | 'anthropic';
   type ProviderState = { configured: boolean; source: 'saved' | 'none' };
   type JobStatus = 'Saved' | 'Applying' | 'Applied' | 'Interviewing' | 'Archived';
-  type JobAssessment = {
-    score: number;
-    rationale: string;
-    strengths: string[];
-    concerns: string[];
-    unansweredQuestions: string[];
-    nextAction: string;
-    assessedAt: string;
-    inputVersion: string;
-  };
   type CoverLetterSession = {
     startingLetter: string;
     draft: string;
@@ -231,25 +224,29 @@
       )
         return [];
       const addedAt = textValue(job.addedAt) || new Date().toISOString();
+      const assessment = migrateJobAssessment(job.assessment);
       const coverLetter = newCoverLetter(job.coverLetter);
       const applicationChat = newApplicationChat(job.applicationChat);
-      return [
-        {
-          ...job,
-          id: textValue(job.id),
-          title: textValue(job.title),
-          company: textValue(job.company),
-          url: linkFor(textValue(job.url)),
-          description: textValue(job.description),
-          notes: textValue(job.notes),
-          status: statuses.includes(job.status as JobStatus) ? (job.status as JobStatus) : 'Saved',
-          addedAt,
-          ...(coverLetter ? { coverLetter } : {}),
-          ...(applicationChat ? { applicationChat } : {}),
-          research: newResearch(job.research),
-          tracking: newTracking(job.tracking, addedAt),
-        },
-      ];
+      const normalizedJob: Job = {
+        ...job,
+        id: textValue(job.id),
+        title: textValue(job.title),
+        company: textValue(job.company),
+        url: linkFor(textValue(job.url)),
+        description: textValue(job.description),
+        notes: textValue(job.notes),
+        status: statuses.includes(job.status as JobStatus) ? (job.status as JobStatus) : 'Saved',
+        addedAt,
+        research: newResearch(job.research),
+        tracking: newTracking(job.tracking, addedAt),
+      };
+      delete normalizedJob.assessment;
+      delete normalizedJob.coverLetter;
+      delete normalizedJob.applicationChat;
+      if (assessment) normalizedJob.assessment = assessment;
+      if (coverLetter) normalizedJob.coverLetter = coverLetter;
+      if (applicationChat) normalizedJob.applicationChat = applicationChat;
+      return [normalizedJob];
     });
   }
 
@@ -1494,18 +1491,19 @@
       )
     )
       return;
-    if (letterResult && letterResult !== version.draft) {
-      letterVersions = [
-        ...letterVersions,
-        {
-          id: crypto.randomUUID(),
-          draft: letterResult,
-          createdAt: new Date().toISOString(),
-          request: 'User-edited draft saved before restoring an earlier version.',
-        },
-      ].slice(-30);
-    }
-    letterResult = version.draft;
+    const restored = restoreStoredGeneratedLetterVersion(
+      {
+        startingLetter: letterStartingLetter,
+        draft: letterResult,
+        messages: letterMessages,
+        versions: letterVersions,
+        updatedAt: new Date().toISOString(),
+        provider: letterProvider,
+      },
+      version,
+    );
+    letterResult = restored.draft;
+    letterVersions = restored.versions;
     persistLetterSession();
     letterStatus = 'Earlier generated version restored. You can still edit it before saving.';
   }
@@ -2251,7 +2249,7 @@
                     name="description"
                     rows="5"
                     maxlength="15000"
-                    placeholder="Paste the listing here to use it when drafting a cover letter."
+                    placeholder="Paste the listing here to assess your fit and draft a cover letter."
                   ></textarea></label
                 >
                 <label class="field"
@@ -2340,21 +2338,41 @@
                             {job.assessment.nextAction}
                           </p>
                         {/if}
-                        {#if job.assessment.strengths.length || job.assessment.concerns.length || job.assessment.unansweredQuestions.length}
-                          <details>
-                            <summary>See fit details</summary>
-                            {#if job.assessment.strengths.length}<p>
-                                <strong>Strengths:</strong>
-                                {job.assessment.strengths.join(' · ')}
-                              </p>{/if}
-                            {#if job.assessment.concerns.length}<p>
-                                <strong>Concerns:</strong>
-                                {job.assessment.concerns.join(' · ')}
-                              </p>{/if}
-                            {#if job.assessment.unansweredQuestions.length}<p>
-                                <strong>Questions:</strong>
-                                {job.assessment.unansweredQuestions.join(' · ')}
-                              </p>{/if}
+                        {#if job.assessment.strengths.length || job.assessment.concerns.length}
+                          <div
+                            class="assessment-pros-cons"
+                            aria-label="Fit assessment pros and cons"
+                          >
+                            {#if job.assessment.strengths.length}
+                              <section class="assessment-pros">
+                                <h4>Pros</h4>
+                                <ul>
+                                  {#each job.assessment.strengths as strength (strength)}
+                                    <li>{strength}</li>
+                                  {/each}
+                                </ul>
+                              </section>
+                            {/if}
+                            {#if job.assessment.concerns.length}
+                              <section class="assessment-cons">
+                                <h4>Cons</h4>
+                                <ul>
+                                  {#each job.assessment.concerns as concern (concern)}
+                                    <li>{concern}</li>
+                                  {/each}
+                                </ul>
+                              </section>
+                            {/if}
+                          </div>
+                        {/if}
+                        {#if job.assessment.unansweredQuestions.length}
+                          <details class="assessment-questions">
+                            <summary>Questions to clarify</summary>
+                            <ul>
+                              {#each job.assessment.unansweredQuestions as question (question)}
+                                <li>{question}</li>
+                              {/each}
+                            </ul>
                           </details>
                         {/if}
                       </section>
@@ -3438,9 +3456,10 @@
   <p class="eyebrow">OPPORTUNITY REVIEW</p>
   <h2 id="assessment-title">Is this a <em>good fit?</em></h2>
   <p class="dialog-intro">
-    The selected provider receives your profile, this role’s title, company and description, plus up
-    to ten recent recruiter messages. The resulting score is a suggestion based only on that
-    information—not a prediction or a substitute for checking the listing.
+    The selected provider compares your profile with this role’s title, company and pasted
+    description, plus up to ten recent recruiter messages. It returns a fit score, pros, cons, and
+    questions to clarify. This is a suggestion based only on that information—not a prediction or a
+    substitute for checking the listing.
   </p>
   <label class="field"
     ><span>AI provider</span><select bind:value={assessmentProvider}

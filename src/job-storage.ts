@@ -21,6 +21,16 @@ export type ApplicationChatSession = {
   updatedAt: string;
   provider: Provider;
 };
+export type JobAssessment = {
+  score: number;
+  rationale: string;
+  strengths: string[];
+  concerns: string[];
+  unansweredQuestions: string[];
+  nextAction: string;
+  assessedAt: string;
+  inputVersion: string;
+};
 export type BaseLetter = {
   id: string;
   name: string;
@@ -50,6 +60,33 @@ function newLetterVersions(value: unknown): GeneratedLetterVersion[] {
     }))
     .filter((version) => version.draft)
     .slice(-30);
+}
+
+function assessmentItems(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().slice(0, 260))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+export function newJobAssessment(value: unknown): JobAssessment | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const assessment = value as Partial<JobAssessment>;
+  const score = Number(assessment.score);
+  const rationale = textValue(assessment.rationale).trim().slice(0, 900);
+  if (!Number.isFinite(score) || !rationale) return undefined;
+  return {
+    score: Math.min(100, Math.max(0, Math.round(score))),
+    rationale,
+    strengths: assessmentItems(assessment.strengths, 4),
+    concerns: assessmentItems(assessment.concerns, 4),
+    unansweredQuestions: assessmentItems(assessment.unansweredQuestions, 5),
+    nextAction: textValue(assessment.nextAction).trim().slice(0, 260),
+    assessedAt: textValue(assessment.assessedAt) || new Date().toISOString(),
+    inputVersion: textValue(assessment.inputVersion),
+  };
 }
 
 export function newCoverLetter(value: unknown): CoverLetterSession | undefined {
@@ -85,6 +122,26 @@ export function newCoverLetter(value: unknown): CoverLetterSession | undefined {
   if (baseLetterId) coverLetter.baseLetterId = baseLetterId;
   if (baseLetterName) coverLetter.baseLetterName = baseLetterName;
   return coverLetter;
+}
+
+export function restoreGeneratedLetterVersion(
+  session: CoverLetterSession,
+  version: GeneratedLetterVersion,
+  restoredAt = new Date().toISOString(),
+): CoverLetterSession {
+  const versions =
+    session.draft && session.draft !== version.draft
+      ? [
+          ...session.versions,
+          {
+            id: crypto.randomUUID(),
+            draft: session.draft,
+            createdAt: restoredAt,
+            request: 'User-edited draft saved before restoring an earlier version.',
+          },
+        ].slice(-30)
+      : session.versions;
+  return { ...session, draft: version.draft, versions, updatedAt: restoredAt };
 }
 
 export function newApplicationChat(value: unknown): ApplicationChatSession | undefined {

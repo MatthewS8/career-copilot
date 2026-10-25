@@ -5,7 +5,12 @@ import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createServer } from '../server';
-import { migrateBaseLetters, newCoverLetter } from '../src/job-storage';
+import {
+  migrateBaseLetters,
+  newCoverLetter,
+  newJobAssessment,
+  restoreGeneratedLetterVersion,
+} from '../src/job-storage';
 
 type JsonBody = {
   error: string;
@@ -100,6 +105,10 @@ test('serves the app with security headers', async () => {
   assert.match(script, /Open application studio/);
   assert.match(script, /Generated versions/);
   assert.match(script, /Clear this cover-letter session/);
+  assert.match(script, /Discard this saved job assessment from this browser/);
+  assert.match(script, /Restore this generated version/);
+  assert.match(script, /Clear this application-context chat from this browser/);
+  assert.match(script, /Remove this saved job and its local application workspace/);
   const stylesheetPath = html.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
   assert.ok(stylesheetPath);
   assert.equal((await fetch(new URL(stylesheetPath, baseUrl))).status, 200);
@@ -149,6 +158,76 @@ test('migrates reusable-base provenance and immutable generated versions', () =>
       request: '',
     },
   ]);
+});
+
+test('migrates saved-job assessments defensively', () => {
+  assert.deepEqual(
+    newJobAssessment({
+      score: 72.6,
+      rationale: 'Strong technical overlap, with one requirement still unclear.',
+      strengths: ['TypeScript', '  Remote experience  ', 4],
+      concerns: ['Missing domain experience'],
+      unansweredQuestions: ['What is the on-call expectation?'],
+      nextAction: 'Ask about on-call during the first conversation.',
+      assessedAt: '2026-10-25T09:00:00.000Z',
+      inputVersion: 'profile-v1',
+    }),
+    {
+      score: 73,
+      rationale: 'Strong technical overlap, with one requirement still unclear.',
+      strengths: ['TypeScript', 'Remote experience'],
+      concerns: ['Missing domain experience'],
+      unansweredQuestions: ['What is the on-call expectation?'],
+      nextAction: 'Ask about on-call during the first conversation.',
+      assessedAt: '2026-10-25T09:00:00.000Z',
+      inputVersion: 'profile-v1',
+    },
+  );
+  assert.equal(newJobAssessment({ score: 'unknown', rationale: 'A rationale' }), undefined);
+  assert.equal(newJobAssessment({ score: 60, rationale: '' }), undefined);
+});
+
+test('restoring a generated letter preserves the current draft as an immutable version', () => {
+  const restored = restoreGeneratedLetterVersion(
+    {
+      startingLetter: 'Starting point',
+      draft: 'Current edited draft',
+      messages: [],
+      versions: [
+        {
+          id: 'generated-1',
+          draft: 'Original generated draft',
+          createdAt: '2026-10-24T09:00:00.000Z',
+          request: 'Write a first draft',
+        },
+      ],
+      updatedAt: '2026-10-24T09:00:00.000Z',
+      provider: 'openai',
+    },
+    {
+      id: 'generated-1',
+      draft: 'Original generated draft',
+      createdAt: '2026-10-24T09:00:00.000Z',
+      request: 'Write a first draft',
+    },
+    '2026-10-25T09:00:00.000Z',
+  );
+  assert.equal(restored.draft, 'Original generated draft');
+  assert.equal(restored.updatedAt, '2026-10-25T09:00:00.000Z');
+  assert.equal(restored.versions.length, 2);
+  assert.deepEqual(restored.versions[0], {
+    id: 'generated-1',
+    draft: 'Original generated draft',
+    createdAt: '2026-10-24T09:00:00.000Z',
+    request: 'Write a first draft',
+  });
+  const preservedDraft = restored.versions.at(-1);
+  assert.ok(preservedDraft);
+  assert.equal(preservedDraft.draft, 'Current edited draft');
+  assert.equal(
+    preservedDraft.request,
+    'User-edited draft saved before restoring an earlier version.',
+  );
 });
 
 test('stores a profile on the server for subsequent clients', async () => {

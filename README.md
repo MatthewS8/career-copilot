@@ -80,7 +80,7 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 - A guided profile/CV setup and an ongoing AI recruiter interview to gather background, preferences, skills, and job-alert searches.
 - Discovery through permitted public APIs, plus explicit import of locally supplied LinkedIn alert email content. Imported leads can be checked against the permitted verification sources, but JobFinder never reads a mailbox or fetches LinkedIn pages.
 - Recommended roles receive an AI match score when they go through the matching flow. Saved roles can hold the listing text, personal notes, and an application status.
-- Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, strengths, concerns, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.
+- Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, visible pros and cons, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.
 - Saved roles include a browser-local research and application-tracking workspace for user-authored notes, links, questions, contacts, follow-ups, dates, next actions, deadlines, and activity history.
 - A saved role has a local, iterative cover-letter session. You can supply a starting letter or copy a reusable base, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation, generated versions, provenance, and draft reopen with that job.
 
