@@ -327,7 +327,7 @@
   let assessmentAnswerStatus = '';
   let settingsStorageWarning = false;
   let settingsStorageMessage =
-    'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again.';
+    'The saved-key files could not be decrypted. Restore the matching files from backup and restart Career Copilot, or remove provider-keys.enc to discard saved keys and try again.';
   let providerSettings: Record<Provider, ProviderState> = {
     openai: { configured: false, source: 'none' },
     gemini: { configured: false, source: 'none' },
@@ -384,7 +384,7 @@
       authenticated = Boolean(data.user);
       if (authenticated) await loadAccountData();
     } catch (error) {
-      authStatus = errorMessage(error, 'Could not connect to JobFinder.');
+      authStatus = errorMessage(error, 'Could not connect to Career Copilot.');
     } finally {
       authReady = true;
     }
@@ -1000,7 +1000,7 @@
     localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
     try {
       await saveProfileToServer(profile);
-      profileStatus = 'Saved on this JobFinder server.';
+      profileStatus = 'Saved on this Career Copilot server.';
     } catch (error) {
       profileStatus = `${errorMessage(error, 'Could not save the profile.')} Your browser copy was saved locally.`;
     }
@@ -1945,12 +1945,12 @@
 </script>
 
 {#if !authReady}
-  <main class="auth-view" aria-busy="true"><p>Loading JobFinder…</p></main>
+  <main class="auth-view" aria-busy="true"><p>Loading Career Copilot…</p></main>
 {:else if !authenticated}
   <main class="auth-view">
     <section class="auth-card">
       <p class="eyebrow">{setupRequired ? 'FIRST-TIME SETUP' : 'WELCOME BACK'}</p>
-      <h1>{setupRequired ? 'Create your <em>account.</em>' : 'Sign in to JobFinder.'}</h1>
+      <h1>{setupRequired ? 'Create your <em>account.</em>' : 'Sign in to Career Copilot.'}</h1>
       <p>
         {setupRequired
           ? 'Your existing local profile and provider settings will be moved into this first account.'
@@ -1983,9 +1983,9 @@
 {:else}
   <div class="app-shell" class:studio-open={Boolean(activeJobId)}>
     <aside class="sidebar">
-      <a class="brand" href="/" aria-label="JobFinder home">
-        <span class="brand-mark" aria-hidden="true">j.</span>
-        <span>jobfinder</span>
+      <a class="brand" href="/" aria-label="Career Copilot home">
+        <span class="brand-mark" aria-hidden="true">c.</span>
+        <span>career copilot</span>
       </a>
       <div class="sidebar-label">WORKSPACE</div>
       <nav class="primary-nav" aria-label="Main navigation">
@@ -2059,7 +2059,7 @@
         <div class="privacy-card">
           <span class="privacy-icon" aria-hidden="true">✳</span>
           <strong>Your search, your data</strong>
-          <p>Your profile is saved on this JobFinder server.</p>
+          <p>Your profile is saved on this Career Copilot server.</p>
         </div>
         <div class="sidebar-foot">A calmer way to find what’s next.</div>
       </div>
@@ -2096,7 +2096,7 @@
       <main>
         {#if view === 'onboarding'}
           <section class="view onboarding-view" id="view-onboarding">
-            <p class="eyebrow">WELCOME TO JOBFINDER</p>
+            <p class="eyebrow">WELCOME TO CAREER COPILOT</p>
             <h1>Build your search<br />with <em>intention.</em></h1>
             <p class="heading-copy">
               Set up the essentials in a few focused steps. You can skip any of them and return
@@ -2379,9 +2379,9 @@
             <div class="form-note">
               <span aria-hidden="true">✳</span>
               <div>
-                <strong>Your profile is saved on this JobFinder server.</strong> When you choose AI autofill
-                or draft a letter, the text you submit is sent to the selected provider. Your API key
-                stays on the server; review extracted details before saving.
+                <strong>Your profile is saved on this Career Copilot server.</strong> When you choose
+                AI autofill or draft a letter, the text you submit is sent to the selected provider. Your
+                API key stays on the server; review extracted details before saving.
               </div>
             </div>
             <form class="profile-form" id="profile-form" onsubmit={saveProfile}>
@@ -3061,7 +3061,7 @@
                       <details class="job-workspace">
                         <summary>Research &amp; tracking</summary>
                         <p class="workspace-privacy">
-                          Kept only in this browser. Research is user-authored; JobFinder does not
+                          Saved to your account. Research is user-authored; Career Copilot does not
                           fetch listings or company sites.
                         </p>
                         <div class="workspace-grid">
@@ -3359,8 +3359,8 @@
                 <div class="skill-suggestions alert-suggestions">
                   <strong>LinkedIn job alerts worth activating</strong>
                   <p>
-                    Use one alert per focused search. LinkedIn controls the alert; JobFinder does
-                    not access your account.
+                    Use one alert per focused search. LinkedIn controls the alert; Career Copilot
+                    does not access your account.
                   </p>
                   {#each alertSuggestions as suggestion (suggestion)}
                     <a
@@ -3419,7 +3419,7 @@
             <div class="form-note">
               <span aria-hidden="true">✳</span>
               <div>
-                <strong>Only permitted sources are checked.</strong> JobFinder can check the extracted
+                <strong>Only permitted sources are checked.</strong> Career Copilot can check the extracted
                 title, company, and location against Jobicy and any configured Adzuna or Jooble APIs.
                 It never signs in to LinkedIn, scrapes LinkedIn, or automatically crawls company sites.
               </div>
@@ -3651,8 +3651,8 @@
               <p class="eyebrow">PRIVATE PROVIDER SETUP</p>
               <h1>Your keys, <em>your control.</em></h1>
               <p class="heading-copy">
-                Add an AI provider key here once. JobFinder keeps it on the server and encrypts it
-                before saving.
+                Add an AI provider key here once. Career Copilot keeps it on the server and encrypts
+                it before saving.
               </p>
             </div>
             <div class="form-note settings-note">
@@ -3733,16 +3733,14 @@
               {/each}
             </div>
             <p class="settings-warning">
-              JobFinder has no sign-in or multi-user protection. Keep it on your own computer at <code
-                >127.0.0.1</code
-              >; don’t expose this page on a public network. Your keys are not stored in browser
-              storage.
+              Your account keeps provider keys encrypted on the server. Keep Career Copilot on a
+              trusted LAN, use HTTPS before wider exposure, and never share your account password.
             </p>
           </section>
         {/if}
       </main>
       <footer class="app-footer">
-        <span>JobFinder</span><span>Find a role that feels like your next chapter.</span>
+        <span>Career Copilot</span><span>Find a role that feels like your next chapter.</span>
       </footer>
     </div>
   </div>

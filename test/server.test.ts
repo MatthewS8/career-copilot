@@ -330,7 +330,7 @@ test('creates the first account, adopts legacy profile data, and requires its se
   }
 });
 
-test('rejects profile updates that are not from the JobFinder origin', async () => {
+test('rejects profile updates that are not from the Career Copilot origin', async () => {
   const response = await fetch(`${baseUrl}/api/profile`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', origin: 'https://attacker.example' },

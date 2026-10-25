@@ -60,7 +60,7 @@ type ProviderResponse = {
 };
 const providers = new Set<Provider>(['openai', 'gemini', 'anthropic']);
 const keyStoreRecoveryMessage =
-  'Saved API keys could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
+  'Saved API keys could not be decrypted. Restore the matching files from backup and restart Career Copilot, or remove provider-keys.enc in the data directory to discard saved keys and try again.';
 const emptyProfile: Profile = {
   name: '',
   linkedin: '',
@@ -138,7 +138,7 @@ function providerFailureMessage(error: unknown, fallback: string): string {
     case 'unavailable':
       return 'The AI provider is temporarily unavailable. Try again later.';
     case 'network':
-      return 'JobFinder could not reach the AI provider. Check your connection and try again.';
+      return 'Career Copilot could not reach the AI provider. Check your connection and try again.';
     case 'invalid-response':
       return 'The AI provider returned an unexpected response. Try again or check the configured model.';
     case 'rejected':
@@ -599,7 +599,9 @@ async function handleWorkspace(
     return;
   }
   if (!isSameOrigin(request)) {
-    sendJson(response, 403, { error: 'Workspace changes must come from this JobFinder page.' });
+    sendJson(response, 403, {
+      error: 'Workspace changes must come from this Career Copilot page.',
+    });
     return;
   }
   const data = await readRequestData(request, response);
@@ -736,7 +738,7 @@ async function handleAuth(
     return true;
   }
   if (!isSameOrigin(request)) {
-    sendJson(response, 403, { error: 'Account changes must come from this JobFinder page.' });
+    sendJson(response, 403, { error: 'Account changes must come from this Career Copilot page.' });
     return true;
   }
   const data = await readRequestData(request, response);
@@ -784,7 +786,7 @@ async function handleSettings(
     return;
   }
   if (!isSameOrigin(request)) {
-    sendJson(response, 403, { error: 'Settings changes must come from this JobFinder page.' });
+    sendJson(response, 403, { error: 'Settings changes must come from this Career Copilot page.' });
     return;
   }
 
@@ -863,7 +865,7 @@ async function handleProfile(
     return;
   }
   if (!isSameOrigin(request)) {
-    sendJson(response, 403, { error: 'Profile changes must come from this JobFinder page.' });
+    sendJson(response, 403, { error: 'Profile changes must come from this Career Copilot page.' });
     return;
   }
   const data = await readRequestData(request, response);
@@ -2065,13 +2067,15 @@ async function handleRequest(
       });
       response.end();
     } else {
-      sendJson(response, 421, { error: 'Use the configured JobFinder URL.' });
+      sendJson(response, 421, { error: 'Use the configured Career Copilot URL.' });
     }
     return;
   }
 
   if (pathname.startsWith('/api/') && !hasAllowedHost(request)) {
-    sendJson(response, 403, { error: 'JobFinder API access is limited to the configured origin.' });
+    sendJson(response, 403, {
+      error: 'Career Copilot API access is limited to the configured origin.',
+    });
     return;
   }
 
@@ -2196,7 +2200,7 @@ if (require.main === module) {
   const host = process.env.HOST || '127.0.0.1';
   const port = Number(process.env.PORT) || 3000;
   createServer().listen(port, host, () => {
-    console.log(`JobFinder is available at http://${host}:${port.toString()}`);
+    console.log(`Career Copilot is available at http://${host}:${port.toString()}`);
   });
 }
 

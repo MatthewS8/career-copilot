@@ -13,7 +13,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3000',
-        // Preserve the browser host and Origin so JobFinder can enforce the configured
+        // Preserve the browser host and Origin so Career Copilot can enforce the configured
         // canonical URL when Vite is used behind a local reverse proxy.
         changeOrigin: false,
       },

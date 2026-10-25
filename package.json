@@ -1,7 +1,7 @@
 {
-  "name": "jobfinder",
+  "name": "career-copilot",
   "version": "1.0.0",
-  "description": "A personal job-search assistant for organizing leads and drafting applications.",
+  "description": "An AI career consultant for finding, evaluating, and applying to the right jobs.",
   "main": "build/server.js",
   "engines": {
     "node": ">=18.18.0"
