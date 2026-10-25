@@ -39,6 +39,7 @@ export type BaseLetter = {
   sourceJobId?: string;
   sourceJobTitle?: string;
 };
+export type ResumeRevision = { id: string; original: string; acceptedAt: string };
 
 const providers: Provider[] = ['openai', 'gemini', 'anthropic'];
 
@@ -186,4 +187,19 @@ export function migrateBaseLetters(value: unknown): BaseLetter[] {
     })
     .filter((entry) => entry.name && entry.text)
     .slice(-50);
+}
+
+export function migrateResumeRevisions(value: unknown): ResumeRevision[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry): entry is Partial<ResumeRevision> =>
+      Boolean(entry && typeof entry === 'object'),
+    )
+    .map((entry) => ({
+      id: textValue(entry.id) || crypto.randomUUID(),
+      original: textValue(entry.original).slice(0, 20_000),
+      acceptedAt: textValue(entry.acceptedAt) || new Date().toISOString(),
+    }))
+    .filter((entry) => entry.original)
+    .slice(-20);
 }

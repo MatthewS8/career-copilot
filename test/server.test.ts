@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { createServer } from '../server';
 import {
   migrateBaseLetters,
+  migrateResumeRevisions,
   newCoverLetter,
   newJobAssessment,
   restoreGeneratedLetterVersion,
@@ -163,6 +164,24 @@ test('migrates reusable-base provenance and immutable generated versions', () =>
       request: '',
     },
   ]);
+});
+
+test('migrates browser-local resume recovery history defensively', () => {
+  assert.deepEqual(
+    migrateResumeRevisions([
+      { id: 'resume-1', original: 'Earlier resume', acceptedAt: '2026-10-25T09:00:00.000Z' },
+      { id: 'invalid', original: '' },
+      null,
+    ]),
+    [
+      {
+        id: 'resume-1',
+        original: 'Earlier resume',
+        acceptedAt: '2026-10-25T09:00:00.000Z',
+      },
+    ],
+  );
+  assert.deepEqual(migrateResumeRevisions({}), []);
 });
 
 test('migrates saved-job assessments defensively', () => {

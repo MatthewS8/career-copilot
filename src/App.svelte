@@ -3,6 +3,7 @@
   import { SvelteSet } from 'svelte/reactivity';
   import {
     migrateBaseLetters as migrateStoredBaseLetters,
+    migrateResumeRevisions as migrateStoredResumeRevisions,
     newApplicationChat as migrateApplicationChat,
     newJobAssessment as migrateJobAssessment,
     newCoverLetter as migrateCoverLetter,
@@ -295,14 +296,8 @@
   let resumeUpdateProposal = '';
   let resumeUpdateStatus = '';
   let proposingResumeUpdate = false;
-  let resumeRevisions = readStorage<ResumeRevision[]>(RESUME_REVISIONS_KEY, []).filter(
-    (revision): revision is ResumeRevision =>
-      Boolean(
-        revision &&
-        typeof revision.id === 'string' &&
-        typeof revision.original === 'string' &&
-        typeof revision.acceptedAt === 'string',
-      ),
+  let resumeRevisions = migrateStoredResumeRevisions(
+    readStorage<unknown>(RESUME_REVISIONS_KEY, []),
   );
   let activeJobId: string | null = null;
   let letterResultField: HTMLTextAreaElement;
