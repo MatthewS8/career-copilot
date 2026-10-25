@@ -126,6 +126,10 @@ git diff --check
 
 State any check that was not run and why. Test provider/network behavior with mocks; never use the user's credentials merely to validate a change. Use non-sensitive sample data for manual acceptance testing.
 
+## Nice-to-have
+
+- Add dedicated browser UI-test tooling and automate the interactive acceptance scenarios. Until then, keep the existing mocked API/migration tests and perform focused browser acceptance passes with isolated, non-sensitive sample data.
+
 ## Repository State at Handoff
 
-The acceptance/polish modal removal is committed as `834a1dd`; AI-assisted CV-update proposals are committed as `0d1eff3`. The current uncommitted quality follow-up makes browser-local resume recovery history tolerant of prior/invalid storage shapes and adds regression coverage in `src/job-storage.ts` and `test/server.test.ts`. Full type, lint, formatting, build, test, and a non-mutating local browser acceptance pass succeeded with local Node.js v26.8.2; 35 tests passed. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.
+The acceptance/polish modal removal is committed as `834a1dd`; AI-assisted CV-update proposals are committed as `0d1eff3`; defensive resume-recovery migration coverage is committed as `e3afc8d`. Full type, lint, formatting, build, test, and isolated sample-data browser acceptance passes succeeded with local Node.js v26.8.2; 35 tests passed. The remaining optional work is the dedicated browser UI-test tooling listed above. Do not rely on this snapshot in a later session: always run `git status` first. The untracked `cv.tex` and generated LaTeX/PDF outputs (`cv.aux`, `cv.fdb_latexmk`, `cv.fls`, `cv.log`, `cv.out`, `cv.pdf`, `cv.synctex.gz`) are personal user data/build artifacts, not part of the app change and must not be staged or committed.
