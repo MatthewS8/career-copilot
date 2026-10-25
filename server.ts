@@ -34,6 +34,7 @@ type Profile = {
   workStyle: string;
   skills: string;
   priorities: string;
+  clarifications: string;
   experience: string;
   resume: string;
 };
@@ -57,6 +58,7 @@ const emptyProfile: Profile = {
   workStyle: '',
   skills: '',
   priorities: '',
+  clarifications: '',
   experience: '',
   resume: '',
 };
@@ -466,6 +468,7 @@ function profileFrom(value: unknown): Profile {
     workStyle: text(data.workStyle, 100),
     skills: text(data.skills, 1_000),
     priorities: text(data.priorities, 1_000),
+    clarifications: text(data.clarifications, 4_000),
     experience: text(data.experience, 2_000),
     resume: text(data.resume, 20_000),
   };
@@ -831,6 +834,7 @@ async function handleCoverLetter(
     `Experience and strengths: ${text(profile.experience, 2_000) || 'Not provided'}`,
     `Skills and interests: ${text(profile.skills, 1_000) || 'Not provided'}`,
     `Career priorities: ${text(profile.priorities, 1_000) || 'Not provided'}`,
+    `Candidate-confirmed clarifications: ${text(profile.clarifications, 4_000) || 'Not provided'}`,
     `Resume text: ${text(profile.resume, 20_000) || 'Not provided'}`,
     `LinkedIn profile: ${text(profile.linkedin, 500) || 'Not provided'}`,
     `Job title: ${title}`,
@@ -1103,6 +1107,7 @@ function profileSummary(profile: RequestData): string {
     `Skills: ${text(profile.skills, 1_000) || 'Not provided'}`,
     `Experience: ${text(profile.experience, 2_000) || 'Not provided'}`,
     `Priorities: ${text(profile.priorities, 1_000) || 'Not provided'}`,
+    `Candidate-confirmed clarifications: ${text(profile.clarifications, 4_000) || 'Not provided'}`,
     `Resume text: ${text(profile.resume, 20_000) || 'Not provided'}`,
   ].join('\n');
 }

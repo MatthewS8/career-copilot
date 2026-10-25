@@ -78,7 +78,7 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 
 ### What works today
 
-- A guided profile/CV setup and an ongoing AI recruiter interview to gather background, preferences, skills, and job-alert searches.
+- A guided profile/CV setup and an ongoing AI recruiter interview to gather background, preferences, skills, and job-alert searches. Answers to an assessment's clarification questions can be saved to the profile for future assessments.
 - Discovery through permitted public APIs, plus explicit import of locally supplied LinkedIn alert email content. Imported leads can be checked against the permitted verification sources, but JobFinder never reads a mailbox or fetches LinkedIn pages.
 - Recommended roles receive an AI match score when they go through the matching flow. Saved roles can hold the listing text, personal notes, and an application status.
 - Every saved role can receive a user-triggered AI fit assessment. The assessment stores a score, rationale, visible pros and cons, unanswered questions, and a suggested next action locally; it is marked stale when the profile, listing description, or recent recruiter context changes.

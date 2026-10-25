@@ -84,6 +84,7 @@
     workStyle: string;
     skills: string;
     priorities: string;
+    clarifications: string;
     experience: string;
     resume: string;
   };
@@ -137,6 +138,7 @@
     workStyle: '',
     skills: '',
     priorities: '',
+    clarifications: '',
     experience: '',
     resume: '',
   };
@@ -321,6 +323,8 @@
   let assessmentProvider: Provider = 'openai';
   let assessmentStatus = '';
   let assessingJob = false;
+  let assessmentAnswers: Record<string, string> = {};
+  let assessmentAnswerStatus = '';
   let settingsStorageWarning = false;
   let settingsStorageMessage =
     'The saved-key files could not be decrypted. Restore the matching files from backup and restart JobFinder, or remove provider-keys.enc to discard saved keys and try again.';
@@ -1309,6 +1313,7 @@
         workStyle: profile.workStyle,
         skills: profile.skills,
         priorities: profile.priorities,
+        clarifications: profile.clarifications,
         experience: profile.experience,
         resume: profile.resume,
       },
@@ -1333,6 +1338,7 @@
       ? chatProvider
       : (providers.find((provider) => providerSettings[provider].configured) ?? chatProvider);
     assessmentStatus = '';
+    assessmentAnswerStatus = '';
     assessmentDialog.showModal();
   }
 
@@ -1354,6 +1360,7 @@
             workStyle: limitText(profile.workStyle, 100),
             skills: limitText(profile.skills, 1_000),
             priorities: limitText(profile.priorities, 1_000),
+            clarifications: limitText(profile.clarifications, 4_000),
             experience: limitText(profile.experience, 2_000),
             resume: limitText(profile.resume, 15_000),
           },
@@ -1409,6 +1416,39 @@
       return updated;
     });
     persistJobs();
+  }
+
+  function assessmentAnswerKey(jobId: string, question: string): string {
+    return `${jobId}:${question}`;
+  }
+
+  function updateAssessmentAnswer(jobId: string, question: string, event: Event): void {
+    const answer = (event.currentTarget as HTMLTextAreaElement).value;
+    assessmentAnswers = { ...assessmentAnswers, [assessmentAnswerKey(jobId, question)]: answer };
+  }
+
+  async function saveAssessmentAnswer(job: Job, question: string): Promise<void> {
+    const key = assessmentAnswerKey(job.id, question);
+    const answer = (assessmentAnswers[key] || '').trim();
+    if (!answer) return;
+    const entry = [
+      `Assessment clarification — ${job.title} at ${job.company}`,
+      `Question: ${question}`,
+      `Answer: ${answer}`,
+    ].join('\n');
+    const clarifications = [profile.clarifications.trim(), entry]
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(-4_000);
+    profile = { ...profile, clarifications };
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    try {
+      await saveProfileToServer(profile);
+      assessmentAnswers = { ...assessmentAnswers, [key]: '' };
+      assessmentAnswerStatus = 'Answer saved to your profile and will be included in future assessments.';
+    } catch (error) {
+      assessmentAnswerStatus = `${errorMessage(error, 'Could not save the answer to the server.')} It remains in this browser profile.`;
+    }
   }
 
   function openLetter(job: Job): void {
@@ -1479,6 +1519,8 @@
             location: limitText(profile.location, 300),
             workStyle: limitText(profile.workStyle, 100),
             skills: limitText(profile.skills, 1_000),
+            priorities: limitText(profile.priorities, 1_000),
+            clarifications: limitText(profile.clarifications, 4_000),
             experience: limitText(profile.experience, 2_000),
             resume: limitText(profile.resume, 12_000),
           },
@@ -1650,6 +1692,7 @@
         experience: limitText(profile.experience, 2_000),
         skills: limitText(profile.skills, 1_000),
         priorities: limitText(profile.priorities, 1_000),
+        clarifications: limitText(profile.clarifications, 4_000),
         resume: limitText(profile.resume, 12_000),
         linkedin: limitText(profile.linkedin, 500),
       };
@@ -2220,6 +2263,16 @@
                   ></textarea></label
                 >
                 <label class="field field-wide"
+                  ><span>Career preferences and clarifications</span><textarea
+                    name="clarifications"
+                    rows="3"
+                    placeholder="Facts you want AI assessments to remember, such as relocation flexibility, on-site preferences, or technologies you have used."
+                    bind:value={profile.clarifications}
+                  ></textarea><small class="field-hint"
+                    >Answers saved from a job assessment are collected here for future jobs.</small
+                  ></label
+                >
+                <label class="field field-wide"
                   ><span>Experience and strengths</span><textarea
                     name="experience"
                     rows="3"
@@ -2554,9 +2607,27 @@
                             <summary>Questions to clarify</summary>
                             <ul>
                               {#each job.assessment.unansweredQuestions as question (question)}
-                                <li>{question}</li>
+                                <li class="assessment-question">
+                                  <span>{question}</span>
+                                  <textarea
+                                    aria-label={`Your answer: ${question}`}
+                                    placeholder="Your answer…"
+                                    value={assessmentAnswers[assessmentAnswerKey(job.id, question)] ?? ''}
+                                    oninput={(event) => updateAssessmentAnswer(job.id, question, event)}
+                                  ></textarea>
+                                  <button
+                                    class="text-button assessment-answer-save"
+                                    type="button"
+                                    disabled={!assessmentAnswers[assessmentAnswerKey(job.id, question)]?.trim()}
+                                    onclick={() => saveAssessmentAnswer(job, question)}
+                                    >Save to profile</button
+                                  >
+                                </li>
                               {/each}
                             </ul>
+                            {#if assessmentAnswerStatus}
+                              <p class="assessment-answer-status" role="status">{assessmentAnswerStatus}</p>
+                            {/if}
                           </details>
                         {/if}
                       </section>

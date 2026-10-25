@@ -263,6 +263,7 @@ test('stores a profile on the server for subsequent clients', async () => {
     workStyle: 'Remote',
     skills: 'TypeScript, Svelte',
     priorities: 'Flexible hours',
+    clarifications: 'Willing to relocate within Europe.',
     experience: 'Built web applications.',
     resume: 'Jamie Lee resume text',
   };
@@ -609,7 +610,11 @@ test('sends a cover-letter prompt to the selected provider', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         provider: 'openai',
-        profile: { name: 'Alex', skills: 'Research' },
+        profile: {
+          name: 'Alex',
+          skills: 'Research',
+          clarifications: 'Open to relocating for the right role.',
+        },
         job: { title: 'Designer', company: 'Example', description: 'Make useful products.' },
       }),
     });
@@ -622,6 +627,7 @@ test('sends a cover-letter prompt to the selected provider', async () => {
       ['Bearer', 'test-key'].join(' '),
     );
     assert.match(outboundRequest.options.body, /Make useful products/);
+    assert.match(outboundRequest.options.body, /Open to relocating for the right role/);
   } finally {
     global.fetch = originalFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -801,7 +807,11 @@ test('assesses a saved job with a structured, cautious fit result', async () => 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         provider: 'openai',
-        profile: { roles: 'Backend Engineer', skills: 'TypeScript' },
+        profile: {
+          roles: 'Backend Engineer',
+          skills: 'TypeScript',
+          clarifications: 'Willing to relocate to Luxembourg for the right role.',
+        },
         job: { title: 'Platform Engineer', company: 'Example' },
         messages: [{ role: 'user', content: 'I prefer remote work in Europe.' }],
       }),
@@ -818,6 +828,7 @@ test('assesses a saved job with a structured, cautious fit result', async () => 
     assert.match(prompt, /Platform Engineer/);
     assert.match(prompt, /Not provided\. Identify the missing information as uncertainty\./);
     assert.match(prompt, /I prefer remote work in Europe\./);
+    assert.match(prompt, /Willing to relocate to Luxembourg/);
     assert.match(instructions, /Do not invent job requirements/);
 
     const invalid = await originalFetch(`${baseUrl}/api/job-assessment`, {
