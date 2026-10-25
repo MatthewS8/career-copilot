@@ -85,10 +85,10 @@ JobFinder's purpose is to be a durable, personal job-search workspace: a place t
 - Saved roles include a browser-local research and application-tracking workspace for user-authored notes, links, questions, contacts, follow-ups, dates, next actions, deadlines, and activity history.
 - A saved role has a local, iterative cover-letter session. You can supply a starting letter or copy a reusable base, generate a tailored draft, edit it, and use follow-up prompts to adjust it; the conversation, generated versions, provenance, and draft reopen with that job.
 
-### Next: acceptance and polish
+### Release readiness and polish
 
-1. Add focused UI regression, migration, and in-browser acceptance coverage for reusable bases, provenance, generated-version restoration, and destructive confirmations.
-2. Keep outputs truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Support editing, copying, downloading, and deleting local drafts, with confirmation for destructive actions.
+1. Focused migration/regression coverage and isolated browser acceptance passes cover reusable bases, provenance, generated-version restoration, persisted resume recovery, and destructive confirmations. Dedicated browser UI-test tooling remains a nice-to-have.
+2. Outputs remain truthful and user-controlled: the AI must not invent experience, achievements, or qualifications. Local drafts are editable, copyable/downloadable where applicable, and protected by confirmations for destructive actions.
 3. Add a small, embedded application-context chat beside each saved job so the user can ask questions about the role and practice answers to likely questions on the application site. Keep the job description, profile, and any user-confirmed application context within the existing provider-sharing boundary. **Implemented.**
 4. Move the cover-letter workspace from a modal into the saved-job page so the letter, application chat, research, and tracker can be used together without losing context. **Implemented.**
 5. When a saved job changes to **Applied**, automatically set its Applied date to today's date; preserve later manual edits to that date. **Implemented.**
